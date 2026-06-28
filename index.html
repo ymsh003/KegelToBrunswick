@@ -353,6 +353,18 @@
       <h2>Estimated Shape</h2>
       <div class="bands" id="bands"></div>
 
+      <h2>Image Table Reader</h2>
+      <div class="status" id="imageReaderStatus">PDF画像を読み込むと、Forward/Reverse表の行画像がここに表示されます。</div>
+      <div class="tablewrap">
+        <table id="imageReaderTable">
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="controls">
+        <button id="applyImageRowsBtn">画像表の入力を反映</button>
+        <button id="clearImageRowsBtn">画像表入力をクリア</button>
+      </div>
+
       <h2>Brunswick Pattern Design</h2>
       <div class="tablewrap">
         <table id="resultTable"></table>
@@ -403,6 +415,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
     ];
 
     const $ = (id) => document.getElementById(id);
+    let imageReaderRows = [];
 
     function parseList(id) {
       return $(id).value.split(",").map(x => Number(x.trim())).filter(x => Number.isFinite(x));
@@ -508,6 +521,102 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       ctx.drawImage(source, box.x, box.y, box.w, box.h, 0, 0, target.width, target.height);
     }
 
+    function makeImageReaderRow(direction, rowNumber, source, box) {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(box.w));
+      canvas.height = Math.max(1, Math.round(box.h));
+      canvas.getContext("2d").drawImage(source, box.x, box.y, box.w, box.h, 0, 0, canvas.width, canvas.height);
+      return { direction, rowNumber, canvas, values: ["", "", "", "", "", "", ""] };
+    }
+
+    function buildImageReader(source) {
+      const scaleX = source.naturalWidth / 875;
+      const scaleY = source.naturalHeight / 1176;
+      const rows = [];
+      const forwardY = [391, 405, 419, 433];
+      const reverseY = [589, 603, 617, 631, 645];
+      forwardY.forEach((y, i) => rows.push(makeImageReaderRow("forward", i + 1, source, {
+        x: 112 * scaleX, y: y * scaleY, w: 382 * scaleX, h: 15 * scaleY
+      })));
+      reverseY.forEach((y, i) => rows.push(makeImageReaderRow("reverse", i + 1, source, {
+        x: 112 * scaleX, y: y * scaleY, w: 382 * scaleX, h: 15 * scaleY
+      })));
+      imageReaderRows = rows;
+      renderImageReader();
+    }
+
+    function renderImageReader() {
+      const table = $("imageReaderTable");
+      table.innerHTML = "";
+      const thead = document.createElement("thead");
+      const hr = document.createElement("tr");
+      ["dir", "row image", "start", "stop", "loads", "speed", "start ft", "end ft", "t.oil"].forEach(label => {
+        const th = document.createElement("th");
+        th.textContent = label;
+        hr.appendChild(th);
+      });
+      thead.appendChild(hr);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
+      imageReaderRows.forEach((row, ri) => {
+        const tr = document.createElement("tr");
+        const dir = document.createElement("td");
+        dir.textContent = row.direction;
+        tr.appendChild(dir);
+
+        const imgCell = document.createElement("td");
+        const canvas = row.canvas.cloneNode();
+        canvas.width = row.canvas.width;
+        canvas.height = row.canvas.height;
+        canvas.getContext("2d").drawImage(row.canvas, 0, 0);
+        canvas.style.width = "260px";
+        canvas.style.height = "auto";
+        imgCell.appendChild(canvas);
+        tr.appendChild(imgCell);
+
+        row.values.forEach((value, ci) => {
+          const td = document.createElement("td");
+          const input = document.createElement("input");
+          input.value = value;
+          input.dataset.row = String(ri);
+          input.dataset.col = String(ci);
+          input.addEventListener("input", () => {
+            imageReaderRows[Number(input.dataset.row)].values[Number(input.dataset.col)] = input.value.trim();
+          });
+          td.appendChild(input);
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      $("imageReaderStatus").textContent = imageReaderRows.length
+        ? `${imageReaderRows.length} 行の画像表を切り出しました。各行を読み取り、入力後に反映してください。`
+        : "PDF画像を読み込むと、Forward/Reverse表の行画像がここに表示されます。";
+    }
+
+    function applyImageReaderRows() {
+      const completed = imageReaderRows
+        .map(row => {
+          const [start, stop, loads, speed, startFt, endFt, oil] = row.values.map(v => v.trim());
+          if (![start, stop, loads, speed, startFt, endFt, oil].every(Boolean)) return null;
+          return [row.direction, start, stop, loads, speed, startFt, endFt, oil].join(",");
+        })
+        .filter(Boolean);
+      if (!completed.length) {
+        $("imageReaderStatus").textContent = "反映できる入力済み行がありません。";
+        return;
+      }
+      $("kegelRows").value = completed.join("\n");
+      $("imageReaderStatus").textContent = `${completed.length} 行をKegel Rowsへ反映しました。`;
+      refresh();
+    }
+
+    function clearImageReaderRows() {
+      imageReaderRows.forEach(row => row.values = row.values.map(() => ""));
+      renderImageReader();
+    }
+
     async function showPdfImagePreview(bytes) {
       const images = extractEmbeddedJpegImages(bytes);
       if (!images.length) return false;
@@ -530,6 +639,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         const scaleY = img.naturalHeight / 1176;
         drawCrop(img, $("forwardCrop"), { x: 110 * scaleX, y: 370 * scaleY, w: 395 * scaleX, h: 190 * scaleY });
         drawCrop(img, $("reverseCrop"), { x: 110 * scaleX, y: 570 * scaleY, w: 395 * scaleX, h: 190 * scaleY });
+        buildImageReader(img);
         $("pdfPreview").classList.add("active");
         return true;
       } finally {
@@ -933,6 +1043,8 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
 
     $("convertBtn").addEventListener("click", refresh);
     $("pdfFile").addEventListener("change", importKegelPdf);
+    $("applyImageRowsBtn").addEventListener("click", applyImageReaderRows);
+    $("clearImageRowsBtn").addEventListener("click", clearImageReaderRows);
     $("xlsxBtn").addEventListener("click", downloadXlsx);
     $("downloadBtn").addEventListener("click", downloadCsv);
     $("resetBtn").addEventListener("click", reset);

@@ -9,7 +9,8 @@ This is a prototype.
 - The final goal is PDF-driven conversion from Kegel pattern sheets to Brunswick pattern workbooks.
 - The current build can generate a Brunswick workbook by rewriting a local Brunswick template XLSX.
 - PDF extraction has a first offline text-parser pass.
-- Image-only Kegel PDFs still need OCR/image-analysis work.
+- Image-only Kegel PDFs can be detected and previewed by extracting embedded JPEG images.
+- Image-only table OCR is still under development.
 - The Kegel row table in the UI is an intermediate/manual correction layer.
 
 ## Offline Policy
@@ -26,10 +27,11 @@ The app is designed for offline lane-maintenance environments.
 
 1. Open `index.html` in Microsoft Edge or Chrome.
 2. Select a Kegel PDF. Text-based Kegel tables are imported into the row editor automatically when possible.
-3. Confirm or edit the Kegel row data.
-4. Select a local Brunswick template XLSX.
-5. Review the generated 39-board table.
-6. Export the converted Brunswick XLSX.
+3. If the PDF is image-only, review the extracted page and table candidate crops.
+4. Confirm or edit the Kegel row data.
+5. Select a local Brunswick template XLSX.
+6. Review the generated 39-board table.
+7. Export the converted Brunswick XLSX.
 
 ## Important Notes
 
@@ -44,7 +46,7 @@ The included files are source/prototype files only. Users should supply their ow
 
 ## Next Work
 
-1. Add OCR/image-analysis for image-only Kegel PDF tables.
+1. Add OCR/image-analysis for the extracted Forward/Reverse table crop images.
 2. Validate generated XLSX files in Excel on real Brunswick templates.
 3. Compare multiple official conversion pairs.
 4. Add template-specific cell mapping profiles if different Brunswick workbook versions vary.

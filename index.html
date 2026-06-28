@@ -141,6 +141,39 @@
       color: var(--muted);
     }
 
+    .pdf-preview {
+      display: none;
+      margin-top: 10px;
+      gap: 8px;
+    }
+
+    .pdf-preview.active {
+      display: grid;
+    }
+
+    .pdf-preview canvas {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+    }
+
+    .crop-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .crop-grid figure {
+      margin: 0;
+    }
+
+    .crop-grid figcaption {
+      color: var(--muted);
+      font-size: 11px;
+      margin: 0 0 3px;
+    }
+
     .metrics {
       display: grid;
       grid-template-columns: repeat(4, minmax(120px, 1fr));
@@ -263,6 +296,19 @@
       <label for="pdfFile">Kegel PDF</label>
       <input id="pdfFile" type="file" accept=".pdf,application/pdf">
       <div class="status" id="pdfStatus"></div>
+      <div class="pdf-preview" id="pdfPreview">
+        <canvas id="pdfPageCanvas"></canvas>
+        <div class="crop-grid">
+          <figure>
+            <figcaption>Forward table candidate</figcaption>
+            <canvas id="forwardCrop"></canvas>
+          </figure>
+          <figure>
+            <figcaption>Reverse table candidate</figcaption>
+            <canvas id="reverseCrop"></canvas>
+          </figure>
+        </div>
+      </div>
       <label for="xlsxFile">Brunswick template XLSX</label>
       <input id="xlsxFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
 
@@ -417,6 +463,80 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       return chunks.join(" ").replace(/\s+/g, " ").trim();
     }
 
+    function latin1FromBytes(bytes) {
+      let out = "";
+      const chunk = 8192;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        out += String.fromCharCode(...bytes.slice(i, i + chunk));
+      }
+      return out;
+    }
+
+    function extractEmbeddedJpegImages(bytes) {
+      const binary = latin1FromBytes(bytes);
+      const images = [];
+      let pos = 0;
+      while (true) {
+        const filterAt = binary.indexOf("/DCTDecode", pos);
+        if (filterAt < 0) break;
+        const dictStart = binary.lastIndexOf("<<", filterAt);
+        const streamRe = /stream\r?\n/g;
+        streamRe.lastIndex = filterAt;
+        const streamMatch = streamRe.exec(binary);
+        if (!streamMatch) break;
+        const dataStart = streamMatch.index + streamMatch[0].length;
+        const dataEnd = binary.indexOf("endstream", dataStart);
+        if (dataEnd < 0) break;
+        const dict = binary.slice(dictStart, streamMatch.index);
+        let start = dataStart;
+        let end = dataEnd;
+        while (start < end && (bytes[start] === 10 || bytes[start] === 13)) start++;
+        while (end > start && (bytes[end - 1] === 10 || bytes[end - 1] === 13)) end--;
+        const width = Number((dict.match(/\/Width\s+(\d+)/) || [])[1] || 0);
+        const height = Number((dict.match(/\/Height\s+(\d+)/) || [])[1] || 0);
+        images.push({ width, height, bytes: bytes.slice(start, end) });
+        pos = dataEnd + 9;
+      }
+      return images;
+    }
+
+    function drawCrop(source, target, box) {
+      target.width = Math.max(1, Math.round(box.w));
+      target.height = Math.max(1, Math.round(box.h));
+      const ctx = target.getContext("2d");
+      ctx.clearRect(0, 0, target.width, target.height);
+      ctx.drawImage(source, box.x, box.y, box.w, box.h, 0, 0, target.width, target.height);
+    }
+
+    async function showPdfImagePreview(bytes) {
+      const images = extractEmbeddedJpegImages(bytes);
+      if (!images.length) return false;
+      const largest = images.reduce((a, b) => (b.bytes.length > a.bytes.length ? b : a), images[0]);
+      const blob = new Blob([largest.bytes], { type: "image/jpeg" });
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = url;
+        });
+        const page = $("pdfPageCanvas");
+        page.width = img.naturalWidth;
+        page.height = img.naturalHeight;
+        page.getContext("2d").drawImage(img, 0, 0);
+
+        const scaleX = img.naturalWidth / 875;
+        const scaleY = img.naturalHeight / 1176;
+        drawCrop(img, $("forwardCrop"), { x: 110 * scaleX, y: 370 * scaleY, w: 395 * scaleX, h: 190 * scaleY });
+        drawCrop(img, $("reverseCrop"), { x: 110 * scaleX, y: 570 * scaleY, w: 395 * scaleX, h: 190 * scaleY });
+        $("pdfPreview").classList.add("active");
+        return true;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+
     function parseKegelRowsFromText(text) {
       const normalized = text
         .replace(/([0-9])([LR])/g, "$1$2")
@@ -469,7 +589,10 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         updateMetadataFromPdfText(text);
         const rows = parseKegelRowsFromText(text);
         if (!rows.length) {
-          $("pdfStatus").textContent = "表を文字として抽出できませんでした。画像PDFの可能性が高く、OCR/画像解析が必要です。";
+          const previewed = await showPdfImagePreview(bytes);
+          $("pdfStatus").textContent = previewed
+            ? "表を文字として抽出できませんでした。画像PDFとして検出し、表候補を切り出しました。OCR/画像解析が次の対象です。"
+            : "表を文字として抽出できませんでした。画像PDFの可能性が高く、OCR/画像解析が必要です。";
           return;
         }
         $("kegelRows").value = rowsToCsv(rows);

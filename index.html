@@ -361,6 +361,7 @@
         </table>
       </div>
       <div class="controls">
+        <button id="ocrImageRowsBtn">OCR候補入力</button>
         <button id="applyImageRowsBtn">画像表の入力を反映</button>
         <button id="clearImageRowsBtn">画像表入力をクリア</button>
       </div>
@@ -593,6 +594,185 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       $("imageReaderStatus").textContent = imageReaderRows.length
         ? `${imageReaderRows.length} 行の画像表を切り出しました。各行を読み取り、入力後に反映してください。`
         : "PDF画像を読み込むと、Forward/Reverse表の行画像がここに表示されます。";
+    }
+
+    function cropCanvas(source, box) {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(box.w));
+      canvas.height = Math.max(1, Math.round(box.h));
+      canvas.getContext("2d").drawImage(source, box.x, box.y, box.w, box.h, 0, 0, canvas.width, canvas.height);
+      return canvas;
+    }
+
+    function binarizeCanvas(canvas) {
+      const ctx = canvas.getContext("2d");
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const gray = [];
+      let sum = 0;
+      for (let i = 0; i < img.data.length; i += 4) {
+        const g = img.data[i] * 0.299 + img.data[i + 1] * 0.587 + img.data[i + 2] * 0.114;
+        gray.push(g);
+        sum += g;
+      }
+      const avg = sum / Math.max(1, gray.length);
+      const threshold = Math.min(190, avg - 34);
+      const bits = new Uint8Array(gray.length);
+      for (let i = 0; i < gray.length; i++) bits[i] = gray[i] < threshold ? 1 : 0;
+      return { bits, width: canvas.width, height: canvas.height };
+    }
+
+    function trimBinary(binary) {
+      const { bits, width, height } = binary;
+      let minX = width, minY = height, maxX = -1, maxY = -1;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (bits[y * width + x]) {
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y);
+            maxY = Math.max(maxY, y);
+          }
+        }
+      }
+      if (maxX < minX) return { bits: new Uint8Array(1), width: 1, height: 1 };
+      const outW = maxX - minX + 1;
+      const outH = maxY - minY + 1;
+      const out = new Uint8Array(outW * outH);
+      for (let y = 0; y < outH; y++) {
+        for (let x = 0; x < outW; x++) out[y * outW + x] = bits[(minY + y) * width + minX + x];
+      }
+      return { bits: out, width: outW, height: outH };
+    }
+
+    function segmentCharacters(canvas) {
+      const binary = trimBinary(binarizeCanvas(canvas));
+      const { bits, width, height } = binary;
+      const cols = Array.from({ length: width }, (_, x) => {
+        let count = 0;
+        for (let y = 0; y < height; y++) count += bits[y * width + x];
+        return count;
+      });
+      const segments = [];
+      let start = -1;
+      let gap = 0;
+      for (let x = 0; x < width; x++) {
+        if (cols[x] > 0) {
+          if (start < 0) start = x;
+          gap = 0;
+        } else if (start >= 0) {
+          gap++;
+          if (gap >= 2) {
+            segments.push([start, x - gap]);
+            start = -1;
+            gap = 0;
+          }
+        }
+      }
+      if (start >= 0) segments.push([start, width - 1]);
+      return segments
+        .filter(([a, b]) => b >= a)
+        .map(([a, b]) => {
+          const w = b - a + 1;
+          const out = new Uint8Array(w * height);
+          for (let y = 0; y < height; y++) {
+            for (let x = 0; x < w; x++) out[y * w + x] = bits[y * width + a + x];
+          }
+          return trimBinary({ bits: out, width: w, height });
+        })
+        .filter(seg => seg.width > 1 || seg.height > 1);
+    }
+
+    function scaleBinary(binary, size = 16) {
+      const out = new Uint8Array(size * size);
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const sx = Math.min(binary.width - 1, Math.floor(x * binary.width / size));
+          const sy = Math.min(binary.height - 1, Math.floor(y * binary.height / size));
+          out[y * size + x] = binary.bits[sy * binary.width + sx] ? 1 : 0;
+        }
+      }
+      return out;
+    }
+
+    let ocrTemplates = null;
+    function getOcrTemplates() {
+      if (ocrTemplates) return ocrTemplates;
+      const chars = "0123456789LR.-";
+      const fonts = ["bold 10px Arial", "bold 11px Arial", "10px Arial", "11px Arial", "bold 10px Tahoma"];
+      const templates = [];
+      chars.split("").forEach(ch => {
+        fonts.forEach(font => {
+          const c = document.createElement("canvas");
+          c.width = 24;
+          c.height = 18;
+          const ctx = c.getContext("2d");
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, c.width, c.height);
+          ctx.fillStyle = "#000";
+          ctx.font = font;
+          ctx.textBaseline = "middle";
+          ctx.fillText(ch, 4, 9);
+          templates.push({ ch, bits: scaleBinary(trimBinary(binarizeCanvas(c))) });
+        });
+      });
+      ocrTemplates = templates;
+      return templates;
+    }
+
+    function scoreBinary(a, b) {
+      let diff = 0;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
+      return diff / a.length;
+    }
+
+    function recognizeCharacter(binary, allowed) {
+      const scaled = scaleBinary(binary);
+      let best = { ch: "", score: Infinity };
+      getOcrTemplates()
+        .filter(t => !allowed || allowed.includes(t.ch))
+        .forEach(t => {
+          const score = scoreBinary(scaled, t.bits);
+          if (score < best.score) best = { ch: t.ch, score };
+        });
+      return best.score < 0.48 ? best.ch : "";
+    }
+
+    function recognizeCell(canvas, allowed) {
+      const chars = segmentCharacters(canvas).map(seg => recognizeCharacter(seg, allowed)).join("");
+      return chars.replace(/^\./, "0.").replace(/-$/, "");
+    }
+
+    function ocrImageReaderRows() {
+      if (!imageReaderRows.length) {
+        $("imageReaderStatus").textContent = "OCR対象の画像行がありません。先にKegel PDFを選択してください。";
+        return;
+      }
+      const boxes = [
+        { x: 18, w: 30, allowed: "0123456789LR" },
+        { x: 48, w: 30, allowed: "0123456789LR" },
+        { x: 80, w: 26, allowed: "0123456789" },
+        { x: 105, w: 30, allowed: "0123456789" },
+        { x: 250, w: 38, allowed: "0123456789.-" },
+        { x: 286, w: 38, allowed: "0123456789.-" },
+        { x: 350, w: 40, allowed: "0123456789-" }
+      ];
+      let filled = 0;
+      imageReaderRows.forEach(row => {
+        row.values = boxes.map(box => {
+          const scale = row.canvas.width / 382;
+          const cell = cropCanvas(row.canvas, {
+            x: box.x * scale,
+            y: 0,
+            w: box.w * scale,
+            h: row.canvas.height
+          });
+          const value = recognizeCell(cell, box.allowed);
+          if (value) filled++;
+          return value;
+        });
+      });
+      renderImageReader();
+      $("imageReaderStatus").textContent = `OCR候補を入力しました。${filled} セルを候補認識しました。必ず目視確認してください。`;
     }
 
     function applyImageReaderRows() {
@@ -1043,6 +1223,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
 
     $("convertBtn").addEventListener("click", refresh);
     $("pdfFile").addEventListener("change", importKegelPdf);
+    $("ocrImageRowsBtn").addEventListener("click", ocrImageReaderRows);
     $("applyImageRowsBtn").addEventListener("click", applyImageReaderRows);
     $("clearImageRowsBtn").addEventListener("click", clearImageReaderRows);
     $("xlsxBtn").addEventListener("click", downloadXlsx);

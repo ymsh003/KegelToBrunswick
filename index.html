@@ -534,13 +534,13 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       const scaleX = source.naturalWidth / 875;
       const scaleY = source.naturalHeight / 1176;
       const rows = [];
-      const forwardY = [391, 405, 419, 433];
-      const reverseY = [589, 603, 617, 631, 645];
+      const forwardY = [190, 205, 220, 235];
+      const reverseY = [452, 467, 482, 497, 512];
       forwardY.forEach((y, i) => rows.push(makeImageReaderRow("forward", i + 1, source, {
-        x: 112 * scaleX, y: y * scaleY, w: 382 * scaleX, h: 15 * scaleY
+        x: 25 * scaleX, y: y * scaleY, w: 470 * scaleX, h: 18 * scaleY
       })));
       reverseY.forEach((y, i) => rows.push(makeImageReaderRow("reverse", i + 1, source, {
-        x: 112 * scaleX, y: y * scaleY, w: 382 * scaleX, h: 15 * scaleY
+        x: 25 * scaleX, y: y * scaleY, w: 470 * scaleX, h: 18 * scaleY
       })));
       imageReaderRows = rows;
       renderImageReader();
@@ -748,18 +748,18 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         return;
       }
       const boxes = [
-        { x: 18, w: 30, allowed: "0123456789LR" },
-        { x: 48, w: 30, allowed: "0123456789LR" },
-        { x: 80, w: 26, allowed: "0123456789" },
-        { x: 105, w: 30, allowed: "0123456789" },
-        { x: 250, w: 38, allowed: "0123456789.-" },
-        { x: 286, w: 38, allowed: "0123456789.-" },
-        { x: 350, w: 40, allowed: "0123456789-" }
+        { x: 24, w: 24, allowed: "0123456789LR" },
+        { x: 58, w: 28, allowed: "0123456789LR" },
+        { x: 114, w: 22, allowed: "0123456789" },
+        { x: 146, w: 28, allowed: "0123456789" },
+        { x: 306, w: 32, allowed: "0123456789.-" },
+        { x: 338, w: 32, allowed: "0123456789.-" },
+        { x: 400, w: 50, allowed: "0123456789-" }
       ];
       let filled = 0;
       imageReaderRows.forEach(row => {
         row.values = boxes.map(box => {
-          const scale = row.canvas.width / 382;
+          const scale = row.canvas.width / 470;
           const cell = cropCanvas(row.canvas, {
             x: box.x * scale,
             y: 0,
@@ -817,8 +817,8 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
 
         const scaleX = img.naturalWidth / 875;
         const scaleY = img.naturalHeight / 1176;
-        drawCrop(img, $("forwardCrop"), { x: 110 * scaleX, y: 370 * scaleY, w: 395 * scaleX, h: 190 * scaleY });
-        drawCrop(img, $("reverseCrop"), { x: 110 * scaleX, y: 570 * scaleY, w: 395 * scaleX, h: 190 * scaleY });
+        drawCrop(img, $("forwardCrop"), { x: 25 * scaleX, y: 171 * scaleY, w: 472 * scaleX, h: 240 * scaleY });
+        drawCrop(img, $("reverseCrop"), { x: 25 * scaleX, y: 433 * scaleY, w: 472 * scaleX, h: 240 * scaleY });
         buildImageReader(img);
         $("pdfPreview").classList.add("active");
         return true;

@@ -262,6 +262,7 @@
       <h2>Input Files</h2>
       <label for="pdfFile">Kegel PDF</label>
       <input id="pdfFile" type="file" accept=".pdf,application/pdf">
+      <div class="status" id="pdfStatus"></div>
       <label for="xlsxFile">Brunswick template XLSX</label>
       <input id="xlsxFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
 
@@ -386,6 +387,97 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
             oil: Number(p[7])
           };
         });
+    }
+
+    function decodePdfString(value) {
+      return value
+        .replace(/\\([nrtbf()\\])/g, (_, ch) => ({ n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", "(": "(", ")": ")", "\\": "\\" }[ch] || ch))
+        .replace(/\\([0-7]{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+    }
+
+    function decodePdfHex(value) {
+      const clean = value.replace(/\s+/g, "");
+      let out = "";
+      for (let i = 0; i + 1 < clean.length; i += 2) {
+        const code = parseInt(clean.slice(i, i + 2), 16);
+        if (Number.isFinite(code) && code >= 32 && code <= 126) out += String.fromCharCode(code);
+      }
+      return out;
+    }
+
+    function extractPdfText(bytes) {
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const chunks = [];
+      for (const m of binary.matchAll(/\((?:\\.|[^\\)])*\)/g)) chunks.push(decodePdfString(m[0].slice(1, -1)));
+      for (const m of binary.matchAll(/<([0-9A-Fa-f\s]{8,})>/g)) {
+        const decoded = decodePdfHex(m[1]);
+        if (/[A-Za-z0-9]/.test(decoded)) chunks.push(decoded);
+      }
+      return chunks.join(" ").replace(/\s+/g, " ").trim();
+    }
+
+    function parseKegelRowsFromText(text) {
+      const normalized = text
+        .replace(/([0-9])([LR])/g, "$1$2")
+        .replace(/\s+/g, " ");
+      const headers = [...normalized.matchAll(/START\s+STOP\s+LOADS\s+SPEED\s+BUFFER\s+TANK\s+CROSSED\s+START\s+END\s+FEET\s+T\.?OIL/gi)];
+      if (!headers.length) return [];
+
+      const rowRe = /(?:^|\s)(\d+)\s+(\d+[LR])\s+(\d+[LR])\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+[AB]\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/gi;
+      const rows = [];
+      headers.forEach((header, sectionIndex) => {
+        const start = header.index + header[0].length;
+        const end = headers[sectionIndex + 1]?.index ?? normalized.length;
+        const section = normalized.slice(start, end);
+        const direction = sectionIndex === 0 ? "forward" : "reverse";
+        for (const m of section.matchAll(rowRe)) {
+          rows.push({
+            direction,
+            start: m[2],
+            stop: m[3],
+            loads: Number(m[4]),
+            speed: Number(m[5]),
+            startFt: Number(m[8]),
+            endFt: Number(m[9]),
+            oil: Number(m[11])
+          });
+        }
+      });
+      return rows;
+    }
+
+    function rowsToCsv(rows) {
+      return rows.map(r => [r.direction, r.start, r.stop, r.loads, r.speed, r.startFt, r.endFt, r.oil].join(",")).join("\n");
+    }
+
+    function updateMetadataFromPdfText(text) {
+      const distance = text.match(/Oil Pattern Distance\s+(\d+(?:\.\d+)?)/i);
+      if (distance) {
+        const ft = Number(distance[1]);
+        if (Number.isFinite(ft)) $("zoneEnds").value = `4,9,14,21,30,${ft}`;
+      }
+    }
+
+    async function importKegelPdf() {
+      const file = $("pdfFile").files[0];
+      if (!file) return;
+      try {
+        $("pdfStatus").textContent = "PDFを読み取っています...";
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const text = extractPdfText(bytes);
+        updateMetadataFromPdfText(text);
+        const rows = parseKegelRowsFromText(text);
+        if (!rows.length) {
+          $("pdfStatus").textContent = "表を文字として抽出できませんでした。画像PDFの可能性が高く、OCR/画像解析が必要です。";
+          return;
+        }
+        $("kegelRows").value = rowsToCsv(rows);
+        $("pdfStatus").textContent = `${rows.length} 行をPDFから読み取りました。`;
+        refresh();
+      } catch (err) {
+        $("pdfStatus").textContent = `PDF読取エラー: ${err.message}`;
+      }
     }
 
     function edgeProfile(edgeBoard, startBoard, softness) {
@@ -717,6 +809,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
     }
 
     $("convertBtn").addEventListener("click", refresh);
+    $("pdfFile").addEventListener("change", importKegelPdf);
     $("xlsxBtn").addEventListener("click", downloadXlsx);
     $("downloadBtn").addEventListener("click", downloadCsv);
     $("resetBtn").addEventListener("click", reset);

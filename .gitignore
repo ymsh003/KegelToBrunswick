@@ -1,0 +1,9 @@
+*.pdf
+*.xlsx
+*.xlsm
+*.xls
+*.zip
+work/
+downloads/
+.DS_Store
+Thumbs.db

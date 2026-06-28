@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kegel to Brunswick Prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #20242a;
+      --muted: #667085;
+      --line: #d7dde5;
+      --panel: #f7f9fb;
+      --accent: #0f766e;
+      --accent-2: #b45309;
+      --bad: #b42318;
+      --good: #047857;
+      --cell: 28px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+      color: var(--ink);
+      background: #ffffff;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      padding: 18px 22px 14px;
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 21px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(340px, 460px) minmax(0, 1fr);
+      min-height: calc(100vh - 62px);
+    }
+
+    aside {
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 16px;
+      overflow: auto;
+    }
+
+    section.workspace {
+      padding: 16px;
+      overflow: auto;
+    }
+
+    h2 {
+      font-size: 14px;
+      margin: 18px 0 8px;
+      letter-spacing: 0;
+    }
+
+    h2:first-child { margin-top: 0; }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 10px 0 4px;
+    }
+
+    textarea, input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--ink);
+      font: 12px/1.45 Consolas, "Yu Gothic UI", monospace;
+    }
+
+    textarea {
+      min-height: 174px;
+      resize: vertical;
+      padding: 9px;
+    }
+
+    input {
+      height: 34px;
+      padding: 6px 8px;
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 12px 0 2px;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      height: 34px;
+      padding: 0 12px;
+      font-weight: 650;
+      color: var(--ink);
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    button:hover { filter: brightness(.98); }
+
+    .status {
+      margin-top: 10px;
+      min-height: 20px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+    }
+
+    .metric b {
+      display: block;
+      font-size: 20px;
+      line-height: 1.2;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .tablewrap {
+      max-width: 100%;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    table {
+      border-collapse: collapse;
+      font-size: 12px;
+      width: max-content;
+      min-width: 100%;
+    }
+
+    th, td {
+      border: 1px solid #e5e9ef;
+      min-width: var(--cell);
+      height: 26px;
+      padding: 3px 5px;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    th {
+      background: #eef3f7;
+      color: #344054;
+      font-weight: 700;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    th:first-child, td:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      background: #f8fafc;
+      text-align: left;
+      min-width: 84px;
+    }
+
+    th:first-child { z-index: 3; background: #e8eef4; }
+
+    .heat {
+      color: #111827;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .bands {
+      display: grid;
+      grid-template-columns: repeat(39, 1fr);
+      gap: 1px;
+      height: 210px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fff;
+      align-items: end;
+      margin: 12px 0 18px;
+    }
+
+    .bar {
+      background: linear-gradient(to top, #172554, #0f766e);
+      min-height: 1px;
+      border-radius: 3px 3px 0 0;
+      opacity: .9;
+    }
+
+    .diff-good { color: var(--good); }
+    .diff-bad { color: var(--bad); }
+
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      header { align-items: start; flex-direction: column; }
+      .meta { white-space: normal; }
+      .metrics { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Kegel to Brunswick Prototype</h1>
+    <div class="meta">2020JPBA short33F / Brunswick 39 injector draft</div>
+  </header>
+
+  <main>
+    <aside>
+      <h2>Kegel Rows</h2>
+      <label for="kegelRows">direction,start,stop,loads,speed,startFt,endFt,oil_uL</label>
+      <textarea id="kegelRows" spellcheck="false"></textarea>
+
+      <h2>Input Files</h2>
+      <label for="pdfFile">Kegel PDF</label>
+      <input id="pdfFile" type="file" accept=".pdf,application/pdf">
+      <label for="xlsxFile">Brunswick template XLSX</label>
+      <input id="xlsxFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+
+      <h2>Brunswick Zones</h2>
+      <label for="zoneEnds">zone end distance ft</label>
+      <input id="zoneEnds" value="4,9,14,21,30,33">
+
+      <div class="grid2">
+        <div>
+          <label for="reverseScale">reverse scale</label>
+          <input id="reverseScale" type="number" value="1.00" min="0" max="3" step="0.05">
+        </div>
+        <div>
+          <label for="edgeSoftness">edge softness</label>
+          <input id="edgeSoftness" type="number" value="1.00" min="0.2" max="2.5" step="0.05">
+        </div>
+      </div>
+
+      <label for="zoneCaps">zone center caps %</label>
+      <input id="zoneCaps" value="100,100,100,90,1,0">
+
+      <label for="zoneStarts">edge start by zone</label>
+      <input id="zoneStarts" value="2,4,5,5,5,5">
+
+      <div class="controls">
+        <button class="primary" id="convertBtn">変換</button>
+        <button id="xlsxBtn">XLSX</button>
+        <button id="downloadBtn">CSV</button>
+        <button id="resetBtn">初期値</button>
+      </div>
+      <div class="status" id="status"></div>
+    </aside>
+
+    <section class="workspace">
+      <div class="metrics">
+        <div class="metric"><b id="metricTotal">-</b><span>input oil uL</span></div>
+        <div class="metric"><b id="metricRows">-</b><span>Kegel rows</span></div>
+        <div class="metric"><b id="metricRmse">-</b><span>RMSE vs sample</span></div>
+        <div class="metric"><b id="metricMaxDiff">-</b><span>max diff</span></div>
+      </div>
+
+      <h2>Estimated Shape</h2>
+      <div class="bands" id="bands"></div>
+
+      <h2>Brunswick Pattern Design</h2>
+      <div class="tablewrap">
+        <table id="resultTable"></table>
+      </div>
+
+      <h2>Difference From Provided XLSX</h2>
+      <div class="tablewrap">
+        <table id="diffTable"></table>
+      </div>
+
+      <h2>Offline Development Policy</h2>
+      <div class="tablewrap">
+        <table>
+          <tbody>
+            <tr><td>runtime</td><td>単体HTMLで動作。CDN、クラウドAPI、外部フォントを使わない。</td></tr>
+            <tr><td>input</td><td>最終入力はKegel PDF。現段階のKegel行データ欄はPDF抽出結果の確認・補正用。</td></tr>
+            <tr><td>output</td><td>テンプレートXLSX内のPattern Designを書き換え、ローカルに保存。</td></tr>
+            <tr><td>validation</td><td>合計量、ゾーン距離、39板目%表、差分指標を画面で確認してから使用。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const sampleRows = `forward,2L,2R,4,10,0.0,4.2,7400
+forward,4L,4R,6,14,4.2,16.1,9900
+forward,5L,5R,2,18,16.1,21.2,3100
+forward,2L,2R,0,22,21.2,33.0,0
+reverse,2L,2R,0,30,20.0,33.0,0
+reverse,5L,5R,2,22,13.8,20.0,3100
+reverse,4L,4R,2,18,8.7,13.8,3300
+reverse,2L,2R,1,18,6.2,8.7,1850
+reverse,2L,2R,0,14,0.0,6.2,0`;
+
+    const labels = [
+      "L1","L2","L3","L4","L5","L6","L7","L8","L9","L10","L11","L12","L13","L14","L15","L16","L17","L18","L19","C20",
+      "R19","R18","R17","R16","R15","R14","R13","R12","R11","R10","R9","R8","R7","R6","R5","R4","R3","R2","R1"
+    ];
+
+    const official = [
+      [0,46,46,98,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,98,46,46,0],
+      [0,36,36,95,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,95,36,36,0],
+      [0,25,25,85,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,85,25,25,0],
+      [0,13,13,37,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,37,13,13,0],
+      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+    ];
+
+    const $ = (id) => document.getElementById(id);
+
+    function parseList(id) {
+      return $(id).value.split(",").map(x => Number(x.trim())).filter(x => Number.isFinite(x));
+    }
+
+    function tokenBoard(token) {
+      const m = String(token).trim().match(/^(\d+)([LR])$/i);
+      if (!m) return 20;
+      const n = Number(m[1]);
+      return m[2].toUpperCase() === "L" ? n : 40 - n;
+    }
+
+    function parseRows() {
+      return $("kegelRows").value.split(/\n+/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map((line, i) => {
+          const p = line.split(",").map(x => x.trim());
+          if (p.length < 8) throw new Error(`row ${i + 1}: column count`);
+          return {
+            direction: p[0].toLowerCase(),
+            start: p[1],
+            stop: p[2],
+            loads: Number(p[3]),
+            speed: Number(p[4]),
+            startFt: Number(p[5]),
+            endFt: Number(p[6]),
+            oil: Number(p[7])
+          };
+        });
+    }
+
+    function edgeProfile(edgeBoard, startBoard, softness) {
+      if (edgeBoard <= 1) return 0;
+      const table = [
+        { s: 2, e23: 46, e4: 98 },
+        { s: 4, e23: 36, e4: 95 },
+        { s: 5, e23: 25, e4: 85 }
+      ];
+      let a = table[0], b = table[table.length - 1];
+      for (let i = 0; i < table.length - 1; i++) {
+        if (startBoard >= table[i].s && startBoard <= table[i + 1].s) {
+          a = table[i];
+          b = table[i + 1];
+          break;
+        }
+      }
+      const t = a.s === b.s ? 0 : (startBoard - a.s) / (b.s - a.s);
+      const e23 = a.e23 + (b.e23 - a.e23) * t;
+      const e4 = a.e4 + (b.e4 - a.e4) * t;
+      let v = edgeBoard <= 3 ? e23 : edgeBoard === 4 ? e4 : 100;
+      return Math.max(0, Math.min(100, 100 - (100 - v) * softness));
+    }
+
+    function boardProfile(startBoard, softness) {
+      return labels.map((_, idx) => {
+        const pos = idx + 1;
+        const edge = Math.min(pos, 40 - pos);
+        return edgeProfile(edge, startBoard, softness) / 100;
+      });
+    }
+
+    function overlap(a0, a1, b0, b1) {
+      const lo = Math.max(Math.min(a0, a1), Math.min(b0, b1));
+      const hi = Math.min(Math.max(a0, a1), Math.max(b0, b1));
+      return Math.max(0, hi - lo);
+    }
+
+    function convert() {
+      const rows = parseRows();
+      const ends = parseList("zoneEnds");
+      const caps = parseList("zoneCaps");
+      const starts = parseList("zoneStarts");
+      const reverseScale = Number($("reverseScale").value || 1);
+      const softness = Number($("edgeSoftness").value || 1);
+      const zones = ends.map((end, i) => ({ start: i === 0 ? 0 : ends[i - 1], end }));
+
+      const result = zones.map((z, zi) => {
+        let weightedStart = 0;
+        let weight = 0;
+        for (const row of rows) {
+          const ol = overlap(z.start, z.end, row.startFt, row.endFt);
+          if (!ol || row.oil <= 0) continue;
+          const rowWeight = ol * row.oil * (row.direction === "reverse" ? reverseScale : 1);
+          const startBoard = Math.min(tokenBoard(row.start), 40 - tokenBoard(row.stop));
+          weightedStart += startBoard * rowWeight;
+          weight += rowWeight;
+        }
+        const inferredStart = weight > 0 ? weightedStart / weight : (starts[zi] || 5);
+        const startBoard = starts[zi] || inferredStart;
+        const cap = caps[zi] ?? 100;
+        return boardProfile(startBoard, softness).map(v => Math.round(v * cap));
+      });
+
+      return { rows, zones, result };
+    }
+
+    function heatColor(v) {
+      const t = Math.max(0, Math.min(100, v)) / 100;
+      const r = Math.round(252 - 210 * t);
+      const g = Math.round(248 - 125 * t);
+      const b = Math.round(235 - 185 * t);
+      return `rgb(${r},${g},${b})`;
+    }
+
+    function renderTable(table, data, rowLabel) {
+      table.innerHTML = "";
+      const thead = document.createElement("thead");
+      const hr = document.createElement("tr");
+      [rowLabel, ...labels].forEach(x => {
+        const th = document.createElement("th");
+        th.textContent = x;
+        hr.appendChild(th);
+      });
+      thead.appendChild(hr);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
+      data.forEach((row, ri) => {
+        const tr = document.createElement("tr");
+        const head = document.createElement("td");
+        head.textContent = `Zone ${ri + 1}`;
+        tr.appendChild(head);
+        row.forEach(v => {
+          const td = document.createElement("td");
+          td.textContent = v;
+          td.className = "heat";
+          td.style.background = heatColor(Math.abs(v));
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+    }
+
+    function renderBars(data) {
+      const totals = labels.map((_, bi) => data.reduce((sum, row) => sum + row[bi], 0));
+      const max = Math.max(1, ...totals);
+      $("bands").innerHTML = totals.map(v => `<div class="bar" title="${v}" style="height:${Math.max(1, v / max * 100)}%"></div>`).join("");
+    }
+
+    function csv(data) {
+      return [["Zone", ...labels], ...data.map((row, i) => [`Zone ${i + 1}`, ...row])]
+        .map(row => row.join(",")).join("\n");
+    }
+
+    function refresh() {
+      try {
+        const out = convert();
+        renderTable($("resultTable"), out.result, "Zone");
+        renderBars(out.result);
+
+        const diff = out.result.map((row, i) => row.map((v, j) => v - (official[i]?.[j] ?? 0)));
+        renderTable($("diffTable"), diff, "Diff");
+
+        const flat = diff.flat();
+        const rmse = Math.sqrt(flat.reduce((s, v) => s + v * v, 0) / Math.max(1, flat.length));
+        const maxDiff = flat.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+        const total = out.rows.reduce((s, r) => s + r.oil, 0);
+
+        $("metricTotal").textContent = total.toLocaleString();
+        $("metricRows").textContent = out.rows.length;
+        $("metricRmse").textContent = rmse.toFixed(1);
+        $("metricMaxDiff").textContent = maxDiff.toFixed(0);
+        $("metricRmse").className = rmse < 8 ? "diff-good" : "diff-bad";
+        $("status").textContent = `Converted ${out.zones.length} zones.`;
+        window.currentCsv = csv(out.result);
+      } catch (err) {
+        $("status").textContent = err.message;
+      }
+    }
+
+    function downloadCsv() {
+      const blob = new Blob([window.currentCsv || ""], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "brunswick-pattern-prototype.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    const crcTable = (() => {
+      const table = new Uint32Array(256);
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        table[n] = c >>> 0;
+      }
+      return table;
+    })();
+
+    function crc32(bytes) {
+      let c = 0xffffffff;
+      for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    }
+
+    function u16(view, offset) { return view.getUint16(offset, true); }
+    function u32(view, offset) { return view.getUint32(offset, true); }
+    function put16(arr, v) { arr.push(v & 255, (v >>> 8) & 255); }
+    function put32(arr, v) { arr.push(v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255); }
+    function concatBytes(parts) {
+      const total = parts.reduce((s, p) => s + p.length, 0);
+      const out = new Uint8Array(total);
+      let off = 0;
+      for (const p of parts) { out.set(p, off); off += p.length; }
+      return out;
+    }
+
+    async function inflateRaw(bytes) {
+      if (!("DecompressionStream" in window)) throw new Error("このブラウザはXLSX展開に未対応です");
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+
+    async function parseZip(buffer) {
+      const bytes = new Uint8Array(buffer);
+      const view = new DataView(buffer);
+      const entries = [];
+      let offset = 0;
+      while (offset + 30 < bytes.length && u32(view, offset) === 0x04034b50) {
+        const flags = u16(view, offset + 6);
+        const method = u16(view, offset + 8);
+        const time = u16(view, offset + 10);
+        const date = u16(view, offset + 12);
+        const crc = u32(view, offset + 14);
+        const compSize = u32(view, offset + 18);
+        const uncompSize = u32(view, offset + 22);
+        const nameLen = u16(view, offset + 26);
+        const extraLen = u16(view, offset + 28);
+        if (flags & 0x08) throw new Error("data descriptor付きXLSXはこの試作版では未対応です");
+        const nameBytes = bytes.slice(offset + 30, offset + 30 + nameLen);
+        const name = new TextDecoder().decode(nameBytes);
+        const dataStart = offset + 30 + nameLen + extraLen;
+        const comp = bytes.slice(dataStart, dataStart + compSize);
+        let data;
+        if (method === 0) data = comp;
+        else if (method === 8) data = await inflateRaw(comp);
+        else throw new Error(`${name}: ZIP圧縮方式 ${method} は未対応です`);
+        entries.push({ name, data, time, date, crc, uncompSize });
+        offset = dataStart + compSize;
+      }
+      return entries;
+    }
+
+    function buildZip(entries) {
+      const encoder = new TextEncoder();
+      const localParts = [];
+      const centralParts = [];
+      let offset = 0;
+      for (const entry of entries) {
+        const name = encoder.encode(entry.name);
+        const data = entry.data;
+        const crc = crc32(data);
+        const time = entry.time || 0;
+        const date = entry.date || 0;
+        const local = [];
+        put32(local, 0x04034b50); put16(local, 20); put16(local, 0); put16(local, 0);
+        put16(local, time); put16(local, date); put32(local, crc); put32(local, data.length); put32(local, data.length);
+        put16(local, name.length); put16(local, 0);
+        const localBytes = concatBytes([new Uint8Array(local), name, data]);
+        localParts.push(localBytes);
+
+        const central = [];
+        put32(central, 0x02014b50); put16(central, 20); put16(central, 20); put16(central, 0); put16(central, 0);
+        put16(central, time); put16(central, date); put32(central, crc); put32(central, data.length); put32(central, data.length);
+        put16(central, name.length); put16(central, 0); put16(central, 0); put16(central, 0); put16(central, 0); put32(central, 0); put32(central, offset);
+        centralParts.push(concatBytes([new Uint8Array(central), name]));
+        offset += localBytes.length;
+      }
+      const centralDir = concatBytes(centralParts);
+      const end = [];
+      put32(end, 0x06054b50); put16(end, 0); put16(end, 0); put16(end, entries.length); put16(end, entries.length);
+      put32(end, centralDir.length); put32(end, offset); put16(end, 0);
+      return concatBytes([...localParts, centralDir, new Uint8Array(end)]);
+    }
+
+    function cellRef(row, col) {
+      let s = "";
+      while (col > 0) {
+        const m = (col - 1) % 26;
+        s = String.fromCharCode(65 + m) + s;
+        col = Math.floor((col - 1) / 26);
+      }
+      return s + row;
+    }
+
+    function setCell(xml, ref, value) {
+      const escaped = String(value);
+      const cellRe = new RegExp(`<x:c\\\\b([^>]*?\\\\br="${ref}"[^>]*)\\\\s*(?:\\\\/>|>[\\\\s\\\\S]*?<\\\\/x:c>)|<c\\\\b([^>]*?\\\\br="${ref}"[^>]*)\\\\s*(?:\\\\/>|>[\\\\s\\\\S]*?<\\\\/c>)`);
+      const found = xml.match(cellRe);
+      if (found) {
+        const attrs = (found[1] || found[2] || ` r="${ref}"`).replace(/\s+t="[^"]*"/g, "");
+        const prefix = found[1] ? "x:" : "";
+        return xml.replace(cellRe, `<${prefix}c${attrs}><${prefix}v>${escaped}</${prefix}v></${prefix}c>`);
+      }
+      const cell = `<x:c r="${ref}"><x:v>${escaped}</x:v></x:c>`;
+      const rowNum = Number(ref.match(/\d+/)[0]);
+      const rowRe = new RegExp(`(<x:row\\\\b[^>]*?\\\\br="${rowNum}"[^>]*>|<row\\\\b[^>]*?\\\\br="${rowNum}"[^>]*>)`);
+      return xml.replace(rowRe, `$1${cell}`);
+    }
+
+    function rewritePatternSheet(xml, pattern, zoneEnds) {
+      const zoneEndRefs = ["G21", "K21", "O21", "S21", "W21", "AA21"];
+      zoneEndRefs.forEach((ref, i) => { xml = setCell(xml, ref, zoneEnds[i] ?? ""); });
+      const boardCols = Array.from({ length: 39 }, (_, i) => i + 3);
+      pattern.forEach((row, ri) => {
+        boardCols.forEach((col, bi) => {
+          xml = setCell(xml, cellRef(29 + ri, col), row[bi] ?? 0);
+        });
+      });
+      return xml;
+    }
+
+    async function downloadXlsx() {
+      try {
+        const file = $("xlsxFile").files[0];
+        if (!file) throw new Error("BrunswickテンプレートXLSXを選択してください");
+        const out = convert();
+        const entries = await parseZip(await file.arrayBuffer());
+        const sheet = entries.find(e => e.name === "xl/worksheets/sheet1.xml");
+        if (!sheet) throw new Error("xl/worksheets/sheet1.xml が見つかりません");
+        const decoder = new TextDecoder();
+        const encoder = new TextEncoder();
+        sheet.data = encoder.encode(rewritePatternSheet(decoder.decode(sheet.data), out.result, parseList("zoneEnds")));
+        const calcChainIndex = entries.findIndex(e => e.name === "xl/calcChain.xml");
+        if (calcChainIndex >= 0) entries.splice(calcChainIndex, 1);
+        const workbook = entries.find(e => e.name === "xl/workbook.xml");
+        if (workbook) {
+          let wb = decoder.decode(workbook.data);
+          const calcPr = '<x:calcPr calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/>';
+          if (/<x:calcPr\b[^>]*\/>/.test(wb)) wb = wb.replace(/<x:calcPr\b[^>]*\/>/, calcPr);
+          else wb = wb.replace("</x:workbook>", `${calcPr}</x:workbook>`);
+          workbook.data = encoder.encode(wb);
+        }
+        const zipped = buildZip(entries);
+        const blob = new Blob([zipped], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "brunswick-pattern-converted.xlsx";
+        a.click();
+        URL.revokeObjectURL(url);
+        $("status").textContent = "Brunswick XLSXを書き出しました。";
+      } catch (err) {
+        $("status").textContent = err.message;
+      }
+    }
+
+    function reset() {
+      $("kegelRows").value = sampleRows;
+      $("zoneEnds").value = "4,9,14,21,30,33";
+      $("reverseScale").value = "1.00";
+      $("edgeSoftness").value = "1.00";
+      $("zoneCaps").value = "100,100,100,90,1,0";
+      $("zoneStarts").value = "2,4,5,5,5,5";
+      refresh();
+    }
+
+    $("convertBtn").addEventListener("click", refresh);
+    $("xlsxBtn").addEventListener("click", downloadXlsx);
+    $("downloadBtn").addEventListener("click", downloadCsv);
+    $("resetBtn").addEventListener("click", reset);
+    reset();
+  </script>
+</body>
+</html>

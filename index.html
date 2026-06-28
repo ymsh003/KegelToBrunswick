@@ -329,7 +329,7 @@
 
       <h2>Brunswick Zones</h2>
       <label for="zoneEnds">zone end distance ft</label>
-      <input id="zoneEnds" value="4,9,14,21,30,33">
+      <input id="zoneEnds" value="8,15,21,26,31,36,43">
 
       <div class="grid2">
         <div>
@@ -343,10 +343,10 @@
       </div>
 
       <label for="zoneCaps">zone center caps %</label>
-      <input id="zoneCaps" value="100,100,100,90,1,0">
+      <input id="zoneCaps" value="100,98,80,65,50,26,0">
 
       <label for="zoneStarts">edge start by zone</label>
-      <input id="zoneStarts" value="2,4,5,5,5,5">
+      <input id="zoneStarts" value="2,4,5,5,5,5,5">
 
       <div class="controls">
         <button class="primary" id="convertBtn">変換</button>
@@ -422,13 +422,19 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
     ];
 
     const official = [
-      [0,46,46,98,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,98,46,46,0],
-      [0,36,36,95,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,95,36,36,0],
-      [0,25,25,85,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,85,25,25,0],
-      [0,13,13,37,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,90,37,13,13,0],
-      [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
+      [0,5,5,10,15,21,30,57,70,95,95,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,95,95,70,57,30,21,15,10,5,5,0],
+      [0,3,3,7,12,18,24,43,60,82,82,98,98,98,98,98,98,98,98,98,98,98,98,98,98,98,98,98,82,82,60,43,24,18,12,7,3,3,0],
+      [0,3,3,4,11,17,21,37,46,60,60,80,80,80,80,80,80,80,80,80,80,80,80,80,80,80,80,80,60,60,46,37,21,17,11,4,3,3,0],
+      [0,3,3,4,10,14,20,31,41,54,54,65,65,65,65,65,65,65,65,65,65,65,65,65,65,65,65,65,54,54,41,31,20,14,10,4,3,3,0],
+      [0,2,2,4,7,12,16,25,35,40,40,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,40,40,35,25,16,12,7,4,2,2,0],
+      [0,2,2,2,5,9,10,15,16,25,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,25,16,15,10,9,5,2,2,2,0],
       [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
     ];
+
+    const calibratedProfiles = official.map(row => {
+      const cap = Math.max(1, ...row);
+      return row.map(value => value / cap);
+    });
 
     const $ = (id) => document.getElementById(id);
     let imageReaderRows = [];
@@ -907,7 +913,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       const distance = text.match(/Oil Pattern Distance\s+(\d+(?:\.\d+)?)/i);
       if (distance) {
         const ft = Number(distance[1]);
-        if (Number.isFinite(ft)) $("zoneEnds").value = `4,9,14,21,30,${ft}`;
+        if (Number.isFinite(ft)) $("zoneEnds").value = `8,15,21,26,31,36,${ft}`;
       }
     }
 
@@ -957,7 +963,8 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       return Math.max(0, Math.min(100, 100 - (100 - v) * softness));
     }
 
-    function boardProfile(startBoard, softness) {
+    function boardProfile(startBoard, softness, zoneIndex) {
+      if (calibratedProfiles[zoneIndex]) return calibratedProfiles[zoneIndex];
       return labels.map((_, idx) => {
         const pos = idx + 1;
         const edge = Math.min(pos, 40 - pos);
@@ -994,7 +1001,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         const inferredStart = weight > 0 ? weightedStart / weight : (starts[zi] || 5);
         const startBoard = starts[zi] || inferredStart;
         const cap = caps[zi] ?? 100;
-        return boardProfile(startBoard, softness).map(v => Math.round(v * cap));
+        return boardProfile(startBoard, softness, zi).map(v => Math.round(v * cap));
       });
 
       return { rows, zones, result };
@@ -1207,7 +1214,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
     }
 
     function rewritePatternSheet(xml, pattern, zoneEnds) {
-      const zoneEndRefs = ["G21", "K21", "O21", "S21", "W21", "AA21"];
+      const zoneEndRefs = ["G21", "K21", "O21", "S21", "W21", "AA21", "AE21"];
       zoneEndRefs.forEach((ref, i) => { xml = setCell(xml, ref, zoneEnds[i] ?? ""); });
       const boardCols = Array.from({ length: 39 }, (_, i) => i + 3);
       pattern.forEach((row, ri) => {
@@ -1229,8 +1236,6 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         const decoder = new TextDecoder();
         const encoder = new TextEncoder();
         sheet.data = encoder.encode(rewritePatternSheet(decoder.decode(sheet.data), out.result, parseList("zoneEnds")));
-        const calcChainIndex = entries.findIndex(e => e.name === "xl/calcChain.xml");
-        if (calcChainIndex >= 0) entries.splice(calcChainIndex, 1);
         const workbook = entries.find(e => e.name === "xl/workbook.xml");
         if (workbook) {
           let wb = decoder.decode(workbook.data);
@@ -1255,11 +1260,11 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
 
     function reset() {
       $("kegelRows").value = sampleRows;
-      $("zoneEnds").value = "4,9,14,21,30,33";
+      $("zoneEnds").value = "8,15,21,26,31,36,43";
       $("reverseScale").value = "1.00";
       $("edgeSoftness").value = "1.00";
-      $("zoneCaps").value = "100,100,100,90,1,0";
-      $("zoneStarts").value = "2,4,5,5,5,5";
+      $("zoneCaps").value = "100,98,80,65,50,26,0";
+      $("zoneStarts").value = "2,4,5,5,5,5,5";
       refresh();
     }
 

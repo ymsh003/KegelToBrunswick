@@ -102,6 +102,21 @@
       padding: 6px 8px;
     }
 
+    input.ocr-high {
+      border-color: #047857;
+      background: #f0fdf4;
+    }
+
+    input.ocr-mid {
+      border-color: #b45309;
+      background: #fffbeb;
+    }
+
+    input.ocr-low {
+      border-color: #b42318;
+      background: #fff5f5;
+    }
+
     .grid2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -527,7 +542,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       canvas.width = Math.max(1, Math.round(box.w));
       canvas.height = Math.max(1, Math.round(box.h));
       canvas.getContext("2d").drawImage(source, box.x, box.y, box.w, box.h, 0, 0, canvas.width, canvas.height);
-      return { direction, rowNumber, canvas, values: ["", "", "", "", "", "", ""] };
+      return { direction, rowNumber, canvas, values: ["", "", "", "", "", "", ""], confidences: [0, 0, 0, 0, 0, 0, 0] };
     }
 
     function buildImageReader(source) {
@@ -580,10 +595,16 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
           const td = document.createElement("td");
           const input = document.createElement("input");
           input.value = value;
+          const confidence = row.confidences?.[ci] || 0;
+          input.className = confidence >= 0.72 ? "ocr-high" : confidence >= 0.52 ? "ocr-mid" : confidence > 0 ? "ocr-low" : "";
+          if (confidence > 0) input.title = `OCR confidence: ${Math.round(confidence * 100)}%`;
           input.dataset.row = String(ri);
           input.dataset.col = String(ci);
           input.addEventListener("input", () => {
             imageReaderRows[Number(input.dataset.row)].values[Number(input.dataset.col)] = input.value.trim();
+            imageReaderRows[Number(input.dataset.row)].confidences[Number(input.dataset.col)] = 0;
+            input.className = "";
+            input.title = "";
           });
           td.appendChild(input);
           tr.appendChild(td);
@@ -734,12 +755,17 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
           const score = scoreBinary(scaled, t.bits);
           if (score < best.score) best = { ch: t.ch, score };
         });
-      return best.score < 0.48 ? best.ch : "";
+      return best.score < 0.56 ? { ch: best.ch, confidence: Math.max(0, 1 - best.score / 0.56) } : { ch: "", confidence: 0 };
     }
 
     function recognizeCell(canvas, allowed) {
-      const chars = segmentCharacters(canvas).map(seg => recognizeCharacter(seg, allowed)).join("");
-      return chars.replace(/^\./, "0.").replace(/-$/, "");
+      const recognized = segmentCharacters(canvas).map(seg => recognizeCharacter(seg, allowed));
+      const raw = recognized.map(r => r.ch).join("");
+      const value = raw.replace(/^\./, "0.").replace(/-$/, "");
+      const confidence = recognized.length
+        ? recognized.reduce((sum, r) => sum + r.confidence, 0) / recognized.length
+        : 0;
+      return { value, confidence };
     }
 
     function ocrImageReaderRows() {
@@ -758,7 +784,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       ];
       let filled = 0;
       imageReaderRows.forEach(row => {
-        row.values = boxes.map(box => {
+        const recognized = boxes.map(box => {
           const scale = row.canvas.width / 470;
           const cell = cropCanvas(row.canvas, {
             x: box.x * scale,
@@ -766,25 +792,40 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
             w: box.w * scale,
             h: row.canvas.height
           });
-          const value = recognizeCell(cell, box.allowed);
-          if (value) filled++;
-          return value;
+          const result = recognizeCell(cell, box.allowed);
+          if (result.value) filled++;
+          return result;
         });
+        row.values = recognized.map(r => r.value);
+        row.confidences = recognized.map(r => r.confidence);
       });
       renderImageReader();
-      $("imageReaderStatus").textContent = `OCR候補を入力しました。${filled} セルを候補認識しました。必ず目視確認してください。`;
+      const low = imageReaderRows.flatMap(row => row.confidences).filter(c => c > 0 && c < 0.52).length;
+      $("imageReaderStatus").textContent = `OCR候補を入力しました。${filled} セルを候補認識、低信頼セル ${low} 件。必ず目視確認してください。`;
     }
 
     function applyImageReaderRows() {
+      const issues = [];
       const completed = imageReaderRows
-        .map(row => {
+        .map((row, index) => {
           const [start, stop, loads, speed, startFt, endFt, oil] = row.values.map(v => v.trim());
           if (![start, stop, loads, speed, startFt, endFt, oil].every(Boolean)) return null;
+          if (!/^\d+[LR]$/i.test(start)) issues.push(`${row.direction} ${index + 1}: start board`);
+          if (!/^\d+[LR]$/i.test(stop)) issues.push(`${row.direction} ${index + 1}: stop board`);
+          if (!/^-?\d+(?:\.\d+)?$/.test(loads)) issues.push(`${row.direction} ${index + 1}: loads`);
+          if (!/^-?\d+(?:\.\d+)?$/.test(speed)) issues.push(`${row.direction} ${index + 1}: speed`);
+          if (!/^-?\d+(?:\.\d+)?$/.test(startFt)) issues.push(`${row.direction} ${index + 1}: start ft`);
+          if (!/^-?\d+(?:\.\d+)?$/.test(endFt)) issues.push(`${row.direction} ${index + 1}: end ft`);
+          if (!/^-?\d+(?:\.\d+)?$/.test(oil)) issues.push(`${row.direction} ${index + 1}: t.oil`);
           return [row.direction, start, stop, loads, speed, startFt, endFt, oil].join(",");
         })
         .filter(Boolean);
       if (!completed.length) {
         $("imageReaderStatus").textContent = "反映できる入力済み行がありません。";
+        return;
+      }
+      if (issues.length) {
+        $("imageReaderStatus").textContent = `形式確認が必要です: ${issues.slice(0, 6).join(", ")}${issues.length > 6 ? " ..." : ""}`;
         return;
       }
       $("kegelRows").value = completed.join("\n");
@@ -794,6 +835,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
 
     function clearImageReaderRows() {
       imageReaderRows.forEach(row => row.values = row.values.map(() => ""));
+      imageReaderRows.forEach(row => row.confidences = row.confidences.map(() => 0));
       renderImageReader();
     }
 

@@ -12,6 +12,8 @@ This is a prototype.
 - Image-only Kegel PDFs can be detected and previewed by extracting embedded JPEG images.
 - Forward/Reverse table rows are cropped into an editable image reader.
 - A lightweight offline OCR pass can fill candidate values for fixed-layout row images.
+- OCR candidates are color-coded by confidence.
+- Row values are validated before being applied to the Kegel row editor.
 - OCR output must be visually checked before applying it.
 - The Kegel row table in the UI is an intermediate/manual correction layer.
 

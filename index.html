@@ -915,22 +915,28 @@
       return crop;
     }
 
-    function enhanceForOcr(source) {
-      const scale = 3;
-      const padding = 18;
+    const ocrProfiles = [
+      { key: "balanced", label: "標準", scale: 3, padding: 18, contrast: 1.35, threshold: 205, binary: true, smoothing: false },
+      { key: "light", label: "薄字", scale: 4, padding: 22, contrast: 1.18, threshold: 220, binary: true, smoothing: false },
+      { key: "gray", label: "階調", scale: 3, padding: 18, contrast: 1.45, threshold: 0, binary: false, smoothing: true }
+    ];
+
+    function enhanceForOcr(source, profile = ocrProfiles[0]) {
+      const scale = profile.scale;
+      const padding = profile.padding;
       const canvas = document.createElement("canvas");
       canvas.width = source.width * scale + padding * 2;
       canvas.height = source.height * scale + padding * 2;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.imageSmoothingEnabled = false;
+      ctx.imageSmoothingEnabled = profile.smoothing;
       ctx.drawImage(source, padding, padding, source.width * scale, source.height * scale);
       const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
       for (let i = 0; i < img.data.length; i += 4) {
         const gray = img.data[i] * 0.299 + img.data[i + 1] * 0.587 + img.data[i + 2] * 0.114;
-        const contrast = Math.max(0, Math.min(255, (gray - 128) * 1.35 + 128));
-        const v = contrast < 205 ? 0 : 255;
+        const contrast = Math.max(0, Math.min(255, (gray - 128) * profile.contrast + 128));
+        const v = profile.binary ? (contrast < profile.threshold ? 0 : 255) : contrast;
         img.data[i] = v;
         img.data[i + 1] = v;
         img.data[i + 2] = v;
@@ -1090,6 +1096,34 @@
       return rows.map(row => columns.map(key => key === "oil_uL" ? (row.oil ?? "") : (row[key] ?? "")).join(",")).join("\n");
     }
 
+    function scoreOcrCandidate(item, text, confidence) {
+      const rows = item.direction ? parseRows(text, item.direction) : [];
+      const normalized = normalizeText(text);
+      const headerHits = ["Start", "Stop", "Loads", "Speed", "Feet", "Oil", "Ratio", "Pattern", "Boards"]
+        .reduce((score, word) => score + (new RegExp("\\b" + word + "\\b", "i").test(normalized) ? 1 : 0), 0);
+      const lengthScore = Math.min(80, normalized.length / 8);
+      return rows.length * 1000 + headerHits * 35 + (Number(confidence) || 0) + lengthScore;
+    }
+
+    async function recognizeBest(worker, item) {
+      const profiles = item.direction ? ocrProfiles : [ocrProfiles[0], ocrProfiles[2]];
+      let best = null;
+      for (const profile of profiles) {
+        log(item.label + " OCR試行: " + profile.label);
+        const result = await worker.recognize(enhanceForOcr(item.canvas, profile));
+        const text = result?.data?.text || "";
+        const confidence = Number(result?.data?.confidence) || 0;
+        const score = scoreOcrCandidate(item, text, confidence);
+        const rows = item.direction ? parseRows(text, item.direction).length : 0;
+        log(item.label + " " + profile.label + ": " + text.length + "文字 / 行 " + rows + " / 信頼度 " + Math.round(confidence));
+        if (!best || score > best.score) {
+          best = { profile, text, confidence, score };
+        }
+      }
+      log(item.label + " 採用: " + best.profile.label);
+      return best;
+    }
+
     function cleanLines(text) {
       return String(text || "")
         .split(/\r?\n/)
@@ -1192,12 +1226,12 @@
         const sections = [];
         for (const item of ocrItems) {
           log(item.label + " OCR開始");
-          const result = await worker.recognize(enhanceForOcr(item.canvas));
-          const text = result?.data?.text || "";
-          sections.push({ key: item.key, direction: item.direction, text });
+          const best = await recognizeBest(worker, item);
+          const text = best.text;
+          sections.push({ key: item.key, direction: item.direction, text, profile: best.profile.label });
           log(item.label + " OCR完了: " + text.length + "文字");
         }
-        const rawText = sections.map(section => "## " + section.key + "\n" + section.text).join("\n\n");
+        const rawText = sections.map(section => "## " + section.key + " / " + (section.profile || "") + "\n" + section.text).join("\n\n");
         const rows = sections
           .filter(section => section.direction)
           .flatMap(section => parseRows(section.text, section.direction));

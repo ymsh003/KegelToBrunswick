@@ -1282,6 +1282,8 @@
       const metadata = parseMetadata(sectionText(sections, "metadata"));
       const forwardOilUl = forwardRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0);
       const reverseOilUl = reverseRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0);
+      const allRows = [...forwardRows, ...reverseRows];
+      const zoneMatrix = estimateZoneMatrix(allRows, metadata.patternDistanceFt || 45);
       return {
         schema: "kegel-to-brunswick.intermediate.v1",
         sourceFile: state.fileName || $("pdfFile").files[0]?.name || "",
@@ -1298,39 +1300,107 @@
           reverseOilUl,
           totalOilUl: forwardOilUl + reverseOilUl
         },
-        boardDistribution: estimateBoardDistribution([...forwardRows, ...reverseRows]),
+        boardDistribution: estimateBoardDistribution(allRows),
+        zoneMatrix,
         ocrProfiles: Object.fromEntries(sections.map(section => [section.key, section.profile || ""]))
       };
     }
 
-    function boardsBetween(start, stop) {
-      const a = boardNumber(start);
-      const b = boardNumber(stop);
+    function boardCoord(board) {
+      const match = String(board || "").match(/^(\d{1,2})([LR])$/);
+      if (!match) return NaN;
+      const value = Number(match[1]);
+      return match[2] === "L" ? -value : value;
+    }
+
+    function coordToSheetIndex(coord) {
+      if (coord < 0) return Math.abs(coord) - 1;
+      if (coord === 0) return 19;
+      return 39 - coord;
+    }
+
+    function sheetIndexToLabel(index) {
+      if (index < 19) return "L" + (index + 1);
+      if (index === 19) return "C20";
+      return "R" + (39 - index);
+    }
+
+    function sheetLabels39() {
+      return Array.from({ length: 39 }, (_, index) => sheetIndexToLabel(index));
+    }
+
+    function coordsBetween(start, stop) {
+      const a = boardCoord(start);
+      const b = boardCoord(stop);
       if (!Number.isFinite(a) || !Number.isFinite(b)) return [];
-      const min = Math.max(1, Math.min(a, b));
-      const max = Math.min(39, Math.max(a, b));
-      const boards = [];
-      for (let board = min; board <= max; board++) boards.push(board);
-      return boards;
+      const min = Math.max(-19, Math.min(a, b));
+      const max = Math.min(19, Math.max(a, b));
+      const coords = [];
+      for (let coord = min; coord <= max; coord++) coords.push(coord);
+      return coords;
     }
 
     function estimateBoardDistribution(rows) {
       const distribution = Array.from({ length: 39 }, (_, index) => ({
-        board: index + 1,
+        board: sheetIndexToLabel(index),
         oilUl: 0
       }));
       rows.forEach(row => {
-        const boards = boardsBetween(row.start, row.stop);
-        if (!boards.length || !Number.isFinite(row.oil)) return;
-        const perBoard = row.oil / boards.length;
-        boards.forEach(board => {
-          distribution[board - 1].oilUl += perBoard;
+        const coords = coordsBetween(row.start, row.stop);
+        if (!coords.length || !Number.isFinite(row.oil)) return;
+        const perBoard = row.oil / coords.length;
+        coords.forEach(coord => {
+          const index = coordToSheetIndex(coord);
+          if (index >= 0 && index < distribution.length) distribution[index].oilUl += perBoard;
         });
       });
       return distribution.map(item => ({
         board: item.board,
         oilUl: Math.round(item.oilUl * 10) / 10
       }));
+    }
+
+    function defaultZoneEnds(patternDistanceFt) {
+      const base = [3, 9, 14, 21, 27, 33, 37, 43];
+      if (patternDistanceFt > 43) base[7] = Math.min(45, patternDistanceFt);
+      return base;
+    }
+
+    function estimateZoneMatrix(rows, patternDistanceFt) {
+      const zoneEnds = defaultZoneEnds(patternDistanceFt);
+      const zoneStarts = zoneEnds.map((end, index) => index === 0 ? 0 : zoneEnds[index - 1]);
+      const raw = zoneEnds.map((end, zoneIndex) => ({
+        zone: zoneIndex + 1,
+        startFt: zoneStarts[zoneIndex],
+        endFt: end,
+        values: Array(39).fill(0)
+      }));
+      rows.forEach(row => {
+        const coords = coordsBetween(row.start, row.stop);
+        const length = Math.abs(row.endFt - row.startFt);
+        if (!coords.length || !Number.isFinite(row.oil) || length <= 0) return;
+        const rowStart = Math.min(row.startFt, row.endFt);
+        const rowEnd = Math.max(row.startFt, row.endFt);
+        const density = row.oil / length / coords.length;
+        raw.forEach(zone => {
+          const overlap = Math.max(0, Math.min(rowEnd, zone.endFt) - Math.max(rowStart, zone.startFt));
+          if (overlap <= 0) return;
+          coords.forEach(coord => {
+            const index = coordToSheetIndex(coord);
+            if (index >= 0 && index < 39) zone.values[index] += density * overlap;
+          });
+        });
+      });
+      return raw.map(zone => {
+        const max = Math.max(...zone.values);
+        return {
+          zone: zone.zone,
+          startFt: zone.startFt,
+          endFt: zone.endFt,
+          rawOilUl: zone.values.map(value => Math.round(value * 10) / 10),
+          percent: zone.values.map(value => max > 0 ? Math.round((value / max) * 100) : 0)
+        };
+      });
     }
 
     function sheetFromAoa(XLSX, rows) {
@@ -1400,6 +1470,35 @@
       ];
     }
 
+    function zoneMatrixAoa(data) {
+      const labels = sheetLabels39();
+      return [
+        ["zone", "startFt", "endFt", ...labels],
+        ...data.zoneMatrix.map(zone => [zone.zone, zone.startFt, zone.endFt, ...zone.percent])
+      ];
+    }
+
+    function zoneMatrixRawAoa(data) {
+      const labels = sheetLabels39();
+      return [
+        ["zone", "startFt", "endFt", ...labels],
+        ...data.zoneMatrix.map(zone => [zone.zone, zone.startFt, zone.endFt, ...zone.rawOilUl])
+      ];
+    }
+
+    function applyPatternDesignSheet(XLSX, workbook, data) {
+      const sheet = workbook.Sheets["Pattern Design"];
+      if (!sheet || !data.zoneMatrix?.length) return false;
+      data.zoneMatrix.slice(0, 8).forEach((zone, rowIndex) => {
+        zone.percent.slice(0, 39).forEach((value, colIndex) => {
+          const address = XLSX.utils.encode_cell({ r: 28 + rowIndex, c: 2 + colIndex });
+          const current = sheet[address] || {};
+          sheet[address] = { ...current, t: "n", v: Number(value) || 0 };
+        });
+      });
+      return true;
+    }
+
     function safeFileBase(name) {
       return String(name || "kegel_pattern")
         .replace(/\.[^.]+$/, "")
@@ -1419,12 +1518,15 @@
         replaceSheet(XLSX, workbook, "KTBC Forward", sheetFromAoa(XLSX, rowsSheetAoa(data.forwardRows)));
         replaceSheet(XLSX, workbook, "KTBC Reverse", sheetFromAoa(XLSX, rowsSheetAoa(data.reverseRows)));
         replaceSheet(XLSX, workbook, "KTBC Boards", sheetFromAoa(XLSX, boardDistributionAoa(data)));
+        replaceSheet(XLSX, workbook, "KTBC ZoneMatrix", sheetFromAoa(XLSX, zoneMatrixAoa(data)));
+        replaceSheet(XLSX, workbook, "KTBC RawOilMatrix", sheetFromAoa(XLSX, zoneMatrixRawAoa(data)));
         replaceSheet(XLSX, workbook, "KTBC Brunswick39", sheetFromAoa(XLSX, brunswick39Aoa(data)));
         replaceSheet(XLSX, workbook, "KTBC JSON", sheetFromAoa(XLSX, [["json"], [JSON.stringify(data)]]));
+        const wrotePatternDesign = applyPatternDesignSheet(XLSX, workbook, data);
         const base = state.templateName ? safeFileBase(state.templateName) : safeFileBase(data.sourceFile);
         const fileName = base + "_with_kegel_conversion.xlsx";
         XLSX.writeFile(workbook, fileName);
-        log("Excel出力: " + fileName + (state.templateName ? " / テンプレート使用: " + state.templateName : ""));
+        log("Excel出力: " + fileName + (state.templateName ? " / テンプレート使用: " + state.templateName : "") + (wrotePatternDesign ? " / Pattern Designへ反映" : ""));
       } catch (error) {
         log("Excel出力エラー: " + (error?.message || error));
         setProgress(100, "Excel出力に失敗しました。ログを確認してください。");

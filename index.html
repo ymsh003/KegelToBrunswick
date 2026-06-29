@@ -1294,7 +1294,7 @@
       const forwardOilUl = forwardRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0);
       const reverseOilUl = reverseRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0);
       const allRows = [...forwardRows, ...reverseRows];
-      const zoneMatrix = estimateZoneMatrix(allRows, metadata.patternDistanceFt || 45);
+      const zoneMatrix = estimateZoneMatrix(allRows, metadata.patternDistanceFt || 45, ratioValues);
       return {
         schema: "kegel-to-brunswick.intermediate.v1",
         sourceFile: state.fileName || $("pdfFile").files[0]?.name || "",
@@ -1321,13 +1321,14 @@
       const match = String(board || "").match(/^(\d{1,2})([LR])$/);
       if (!match) return NaN;
       const value = Number(match[1]);
-      return match[2] === "L" ? -value : value;
+      if (value < 1 || value > 19) return NaN;
+      return match[2] === "L" ? value - 20 : 20 - value;
     }
 
     function coordToSheetIndex(coord) {
-      if (coord < 0) return Math.abs(coord) - 1;
+      if (coord < 0) return coord + 19;
       if (coord === 0) return 19;
-      return 39 - coord;
+      return coord + 19;
     }
 
     function sheetIndexToLabel(index) {
@@ -1377,7 +1378,72 @@
       return base;
     }
 
-    function estimateZoneMatrix(rows, patternDistanceFt) {
+    function ratioBandDefinitions() {
+      return [
+        { key: "outsideLeft", label: "3L-7L", indexes: range(2, 6), ratioIndex: 0 },
+        { key: "middleLeft", label: "8L-12L", indexes: range(7, 11), ratioIndex: 1 },
+        { key: "insideLeft", label: "13L-17L", indexes: range(12, 16), ratioIndex: 2 },
+        { key: "middle", label: "18L-18R", indexes: range(17, 21), ratioIndex: null },
+        { key: "insideRight", label: "17R-13R", indexes: range(22, 26), ratioIndex: 3 },
+        { key: "middleRight", label: "12R-8R", indexes: range(27, 31), ratioIndex: 4 },
+        { key: "outsideRight", label: "7R-3R", indexes: range(32, 36), ratioIndex: 5 }
+      ];
+    }
+
+    function range(start, end) {
+      return Array.from({ length: end - start + 1 }, (_, offset) => start + offset);
+    }
+
+    function sumIndexes(values, indexes) {
+      return indexes.reduce((sum, index) => sum + (Number(values[index]) || 0), 0);
+    }
+
+    function applyRatioConstraints(rawZones, ratioValues) {
+      const ratios = (ratioValues || []).map(Number).filter(value => Number.isFinite(value) && value > 0);
+      if (ratios.length < 6) return [];
+      const bands = ratioBandDefinitions();
+      const totals = new Map();
+      bands.forEach(band => {
+        const total = rawZones.reduce((sum, zone) => sum + sumIndexes(zone.values, band.indexes), 0);
+        totals.set(band.key, total);
+      });
+      const middleTotal = totals.get("middle") || 0;
+      if (middleTotal <= 0) return [];
+
+      const adjustments = [];
+      bands.forEach(band => {
+        if (band.ratioIndex === null) {
+          adjustments.push({
+            band: band.label,
+            ratio: 1,
+            beforeTotal: Math.round(middleTotal * 10) / 10,
+            targetTotal: Math.round(middleTotal * 10) / 10,
+            scale: 1
+          });
+          return;
+        }
+        const ratio = ratios[band.ratioIndex];
+        const beforeTotal = totals.get(band.key) || 0;
+        if (!ratio || beforeTotal <= 0) return;
+        const targetTotal = middleTotal / ratio;
+        const scale = targetTotal / beforeTotal;
+        rawZones.forEach(zone => {
+          band.indexes.forEach(index => {
+            zone.values[index] *= scale;
+          });
+        });
+        adjustments.push({
+          band: band.label,
+          ratio,
+          beforeTotal: Math.round(beforeTotal * 10) / 10,
+          targetTotal: Math.round(targetTotal * 10) / 10,
+          scale: Math.round(scale * 1000) / 1000
+        });
+      });
+      return adjustments;
+    }
+
+    function estimateZoneMatrix(rows, patternDistanceFt, ratioValues = []) {
       const zoneEnds = defaultZoneEnds(patternDistanceFt);
       const zoneStarts = zoneEnds.map((end, index) => index === 0 ? 0 : zoneEnds[index - 1]);
       const raw = zoneEnds.map((end, zoneIndex) => ({
@@ -1404,12 +1470,14 @@
           });
         });
       });
+      const ratioAdjustments = applyRatioConstraints(raw, ratioValues);
       return raw.map(zone => {
         const max = Math.max(...zone.values);
         return {
           zone: zone.zone,
           startFt: zone.startFt,
           endFt: zone.endFt,
+          ratioAdjusted: ratioAdjustments.length > 0,
           rawOilUl: zone.values.map(value => Math.round(value * 10) / 10),
           percent: zone.values.map(value => max > 0 ? Math.round((value / max) * 100) : 0)
         };
@@ -1496,6 +1564,29 @@
       return [
         ["zone", "startFt", "endFt", ...labels],
         ...data.zoneMatrix.map(zone => [zone.zone, zone.startFt, zone.endFt, ...zone.rawOilUl])
+      ];
+    }
+
+    function ratioDetailAoa(data) {
+      const bands = ratioBandDefinitions();
+      const totals = bands.map(band => ({
+        ...band,
+        totalOilUl: data.zoneMatrix.reduce((sum, zone) => sum + sumIndexes(zone.rawOilUl || [], band.indexes), 0)
+      }));
+      const middle = totals.find(item => item.key === "middle")?.totalOilUl || 0;
+      return [
+        ["band", "boards", "target_middle_to_band_ratio", "actual_middle_to_band_ratio", "estimatedOil_uL"],
+        ...totals.map(item => {
+          const target = item.ratioIndex === null ? 1 : (data.ratioValues?.[item.ratioIndex] || "");
+          const actual = item.totalOilUl > 0 ? Math.round((middle / item.totalOilUl) * 100) / 100 : "";
+          return [
+            item.key,
+            item.label,
+            target,
+            actual,
+            Math.round(item.totalOilUl * 10) / 10
+          ];
+        })
       ];
     }
 
@@ -1607,6 +1698,7 @@
         replaceSheet(XLSX, workbook, "KTBC Boards", sheetFromAoa(XLSX, boardDistributionAoa(data)));
         replaceSheet(XLSX, workbook, "KTBC ZoneMatrix", sheetFromAoa(XLSX, zoneMatrixAoa(data)));
         replaceSheet(XLSX, workbook, "KTBC RawOilMatrix", sheetFromAoa(XLSX, zoneMatrixRawAoa(data)));
+        replaceSheet(XLSX, workbook, "KTBC RatioDetail", sheetFromAoa(XLSX, ratioDetailAoa(data)));
         const comparison = compareZoneMatrix(data, state.referenceGrid);
         if (comparison) replaceSheet(XLSX, workbook, "KTBC Comparison", sheetFromAoa(XLSX, comparisonAoa(comparison)));
         replaceSheet(XLSX, workbook, "KTBC Brunswick39", sheetFromAoa(XLSX, brunswick39Aoa(data)));

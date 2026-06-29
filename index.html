@@ -916,9 +916,11 @@
     }
 
     const ocrProfiles = [
-      { key: "balanced", label: "標準", scale: 3, padding: 18, contrast: 1.35, threshold: 205, binary: true, smoothing: false },
-      { key: "light", label: "薄字", scale: 4, padding: 22, contrast: 1.18, threshold: 220, binary: true, smoothing: false },
-      { key: "gray", label: "階調", scale: 3, padding: 18, contrast: 1.45, threshold: 0, binary: false, smoothing: true }
+      { key: "balanced", label: "標準", scale: 3, padding: 18, contrast: 1.35, threshold: 205, binary: true, smoothing: false, psm: "6" },
+      { key: "light", label: "薄字", scale: 4, padding: 22, contrast: 1.18, threshold: 220, binary: true, smoothing: false, psm: "6" },
+      { key: "gray", label: "階調", scale: 3, padding: 18, contrast: 1.45, threshold: 0, binary: false, smoothing: true, psm: "6" },
+      { key: "sparse", label: "疎な表", scale: 4, padding: 24, contrast: 1.25, threshold: 212, binary: true, smoothing: true, psm: "11" },
+      { key: "block", label: "表ブロック", scale: 5, padding: 26, contrast: 1.1, threshold: 218, binary: true, smoothing: false, psm: "4" }
     ];
 
     function enhanceForOcr(source, profile = ocrProfiles[0]) {
@@ -1043,6 +1045,7 @@
     function prepareRowTokens(line) {
       let text = String(line || "")
         .replace(/[»¢]/g, " ")
+        .replace(/[—–]/g, "-")
         .replace(/([0-9])(-[0-9])/g, "$1 $2")
         .replace(/\s+/g, " ")
         .trim();
@@ -1055,6 +1058,24 @@
         tokens = [tokens[0][0], tokens[0][1] + "L", ...tokens.slice(1)];
       }
       return tokens;
+    }
+
+    function boardNumber(board) {
+      const match = String(board || "").match(/^(\d{1,2})[LR]$/);
+      return match ? Number(match[1]) : NaN;
+    }
+
+    function isPlausibleRow(row) {
+      const span = Math.abs(row.endFt - row.startFt);
+      const startBoard = boardNumber(row.start);
+      const stopBoard = boardNumber(row.stop);
+      if (!Number.isFinite(startBoard) || !Number.isFinite(stopBoard)) return false;
+      if (row.loads < 0 || row.loads > 8) return false;
+      if (row.speed < 0 || row.speed > 35) return false;
+      if (row.oil < 0 || row.oil > 9000) return false;
+      if (row.oil > 0 && span < 0.8) return false;
+      if (Math.abs(startBoard - stopBoard) > 18) return false;
+      return true;
     }
 
     function parseRows(text, direction) {
@@ -1078,7 +1099,7 @@
         const oil = normalizeOilValue(tokens[tokens.length - 1]);
         if (!Number.isFinite(startFt) || !Number.isFinite(endFt) || startFt < 0 || endFt < 0 || startFt > 45 || endFt > 45) return;
         if (!Number.isFinite(oil)) return;
-        rows.push({
+        const row = {
           direction,
           start,
           stop,
@@ -1087,7 +1108,9 @@
           startFt,
           endFt,
           oil
-        });
+        };
+        if (!isPlausibleRow(row)) return;
+        rows.push(row);
       });
       return rows;
     }
@@ -1110,6 +1133,12 @@
       let best = null;
       for (const profile of profiles) {
         log(item.label + " OCR試行: " + profile.label);
+        if (worker.setParameters) {
+          await worker.setParameters({
+            tessedit_pageseg_mode: profile.psm || "6",
+            preserve_interword_spaces: "1"
+          });
+        }
         const result = await worker.recognize(enhanceForOcr(item.canvas, profile));
         const text = result?.data?.text || "";
         const confidence = Number(result?.data?.confidence) || 0;

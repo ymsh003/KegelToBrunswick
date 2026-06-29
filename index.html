@@ -1443,6 +1443,35 @@
       return adjustments;
     }
 
+    function normalizeLaneDistance(value, patternDistanceFt) {
+      const distance = Number(value);
+      if (!Number.isFinite(distance)) return NaN;
+      const maxDistance = Math.max(60, Number(patternDistanceFt) || 0);
+      if (distance >= 0 && distance <= maxDistance) return distance;
+      return NaN;
+    }
+
+    function applyLengthwiseDecay(rawZones) {
+      let previousMax = null;
+      return rawZones.map(zone => {
+        const beforeMax = Math.max(...zone.values);
+        let scale = 1;
+        if (beforeMax > 0) {
+          if (previousMax !== null && beforeMax > previousMax) {
+            scale = previousMax / beforeMax;
+            zone.values = zone.values.map(value => value * scale);
+          }
+          previousMax = Math.max(...zone.values);
+        }
+        return {
+          zone: zone.zone,
+          beforeMax: Math.round(beforeMax * 10) / 10,
+          afterMax: Math.round(Math.max(...zone.values) * 10) / 10,
+          scale: Math.round(scale * 1000) / 1000
+        };
+      });
+    }
+
     function estimateZoneMatrix(rows, patternDistanceFt, ratioValues = []) {
       const zoneEnds = defaultZoneEnds(patternDistanceFt);
       const zoneStarts = zoneEnds.map((end, index) => index === 0 ? 0 : zoneEnds[index - 1]);
@@ -1454,12 +1483,12 @@
       }));
       rows.forEach(row => {
         const coords = coordsBetween(row.start, row.stop);
-        const convertedStartFt = row.direction === "reverse" ? 60 - row.startFt : row.startFt;
-        const convertedEndFt = row.direction === "reverse" ? 60 - row.endFt : row.endFt;
-        const length = Math.abs(convertedEndFt - convertedStartFt);
+        const laneStartFt = normalizeLaneDistance(row.startFt, patternDistanceFt);
+        const laneEndFt = normalizeLaneDistance(row.endFt, patternDistanceFt);
+        const length = Math.abs(laneEndFt - laneStartFt);
         if (!coords.length || !Number.isFinite(row.oil) || length <= 0) return;
-        const rowStart = Math.min(convertedStartFt, convertedEndFt);
-        const rowEnd = Math.max(convertedStartFt, convertedEndFt);
+        const rowStart = Math.min(laneStartFt, laneEndFt);
+        const rowEnd = Math.max(laneStartFt, laneEndFt);
         const density = row.oil / length / coords.length;
         raw.forEach(zone => {
           const overlap = Math.max(0, Math.min(rowEnd, zone.endFt) - Math.max(rowStart, zone.startFt));
@@ -1471,15 +1500,20 @@
         });
       });
       const ratioAdjustments = applyRatioConstraints(raw, ratioValues);
+      const decayAdjustments = applyLengthwiseDecay(raw);
+      const globalMax = Math.max(...raw.flatMap(zone => zone.values));
       return raw.map(zone => {
-        const max = Math.max(...zone.values);
+        const decay = decayAdjustments.find(item => item.zone === zone.zone);
         return {
           zone: zone.zone,
           startFt: zone.startFt,
           endFt: zone.endFt,
           ratioAdjusted: ratioAdjustments.length > 0,
+          lengthwiseDecayAdjusted: decayAdjustments.some(item => item.scale < 1),
+          lengthwiseScale: decay?.scale ?? 1,
+          zonePeakOilUl: Math.round(Math.max(...zone.values) * 10) / 10,
           rawOilUl: zone.values.map(value => Math.round(value * 10) / 10),
-          percent: zone.values.map(value => max > 0 ? Math.round((value / max) * 100) : 0)
+          percent: zone.values.map(value => globalMax > 0 ? Math.round((value / globalMax) * 100) : 0)
         };
       });
     }
@@ -1554,16 +1588,16 @@
     function zoneMatrixAoa(data) {
       const labels = sheetLabels39();
       return [
-        ["zone", "startFt", "endFt", ...labels],
-        ...data.zoneMatrix.map(zone => [zone.zone, zone.startFt, zone.endFt, ...zone.percent])
+        ["zone", "startFt", "endFt", "lengthwiseScale", "zonePeakOil_uL", ...labels],
+        ...data.zoneMatrix.map(zone => [zone.zone, zone.startFt, zone.endFt, zone.lengthwiseScale ?? 1, zone.zonePeakOilUl ?? "", ...zone.percent])
       ];
     }
 
     function zoneMatrixRawAoa(data) {
       const labels = sheetLabels39();
       return [
-        ["zone", "startFt", "endFt", ...labels],
-        ...data.zoneMatrix.map(zone => [zone.zone, zone.startFt, zone.endFt, ...zone.rawOilUl])
+        ["zone", "startFt", "endFt", "lengthwiseScale", "zonePeakOil_uL", ...labels],
+        ...data.zoneMatrix.map(zone => [zone.zone, zone.startFt, zone.endFt, zone.lengthwiseScale ?? 1, zone.zonePeakOilUl ?? "", ...zone.rawOilUl])
       ];
     }
 

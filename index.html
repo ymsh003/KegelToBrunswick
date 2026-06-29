@@ -505,7 +505,7 @@
       });
 
       candidates.sort((a, b) => b.score - a.score);
-      return { analysisCanvas: canvas, candidates, lineCount: lines.length };
+      return { analysisCanvas: canvas, candidates, lineCount: lines.length, analysisHeight: height };
     }
 
     function choosePair(candidates) {
@@ -527,6 +527,29 @@
         }
       }
       return best.sort((a, b) => a.y - b.y).slice(0, 2);
+    }
+
+    function looksLikeRatioCandidate(box, analysisHeight) {
+      if (!box) return false;
+      return box.h < 125 && box.y > analysisHeight * 0.55;
+    }
+
+    function repairKegelTablePair(pair, candidates, analysisHeight) {
+      if (!pair.length) return pair;
+      const sorted = pair.slice().sort((a, b) => a.y - b.y);
+      const forward = sorted[0];
+      const reverse = sorted[1];
+      if (!reverse || looksLikeRatioCandidate(reverse, analysisHeight)) {
+        const synthetic = {
+          ...forward,
+          y: Math.min(analysisHeight - Math.max(170, forward.h), Math.round(forward.y + forward.h - 8)),
+          h: Math.max(170, Math.round(forward.h * 0.88)),
+          score: Math.max(120, Math.round(forward.score * 0.72)),
+          synthetic: true
+        };
+        return [forward, synthetic];
+      }
+      return sorted.slice(0, 2);
     }
 
     async function renderPage(pdf, pageNumber, scale = 2.4) {
@@ -683,9 +706,11 @@
           setProgress(15 + Math.round(pageNumber / pdf.numPages * 35), "ページ " + pageNumber + "/" + pdf.numPages + " を画像化しています。");
           const pageCanvas = await renderPage(pdf, pageNumber);
           const detection = detectCandidates(pageCanvas);
-          const pair = choosePair(detection.candidates);
+          const initialPair = choosePair(detection.candidates);
+          const pair = repairKegelTablePair(initialPair, detection.candidates, detection.analysisHeight);
           const score = pair.reduce((sum, item) => sum + item.score, 0);
-          log("page " + pageNumber + ": 横罫線 " + detection.lineCount + "本 / 候補 " + detection.candidates.length + "件 / 採用候補 " + pair.length + "件 / score " + score);
+          const repaired = initialPair[1] && pair[1] && pair[1].synthetic;
+          log("page " + pageNumber + ": 横罫線 " + detection.lineCount + "本 / 候補 " + detection.candidates.length + "件 / 採用候補 " + pair.length + "件 / score " + score + (repaired ? " / Ratio候補を除外してReverseを推定" : ""));
           if (!best || score > best.score) best = { pageNumber, pageCanvas, detection, pair, score };
         }
 
@@ -699,7 +724,7 @@
         $("candidateMetric").textContent = best.detection.candidates.length;
         log("採用ページ: " + best.pageNumber + " / score " + best.score);
         best.pair.forEach((box, index) => {
-          log((index === 0 ? "Forward候補" : "Reverse候補") + ": x=" + box.x + " y=" + box.y + " w=" + box.w + " h=" + box.h + " lines=" + box.lines + " vLines=" + box.vLines + " score=" + box.score);
+          log((index === 0 ? "Forward候補" : "Reverse候補") + ": x=" + box.x + " y=" + box.y + " w=" + box.w + " h=" + box.h + " lines=" + (box.lines ?? "-") + " vLines=" + (box.vLines ?? "-") + " score=" + box.score + (box.synthetic ? " / 推定範囲" : ""));
         });
 
         drawSelectedPage(best.pageCanvas, best.pair);
@@ -713,7 +738,7 @@
         cropItems.forEach(item => {
           const figure = document.createElement("figure");
           const caption = document.createElement("figcaption");
-          caption.textContent = item.label + " / score " + item.box.score + " / " + item.box.w + "x" + item.box.h;
+          caption.textContent = item.label + " / score " + item.box.score + " / " + item.box.w + "x" + item.box.h + (item.box.synthetic ? " / 推定範囲" : "");
           figure.appendChild(caption);
           figure.appendChild(item.canvas);
           $("cropList").appendChild(figure);

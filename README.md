@@ -1,6 +1,6 @@
 # Kegel to Brunswick Pattern Converter Prototype
 
-Kegel形式のオイルパターンPDFを、Brunswick形式のPattern Design Excelへ変換するためのオフライン試作ツールです。
+Kegel形式のオイルパターンPDFを、Brunswick形式のPattern Design Excelへ変換するための試作ツールです。
 
 ## Current Status
 
@@ -11,21 +11,21 @@ This is a prototype.
 - PDF extraction has a first offline text-parser pass.
 - Image-only Kegel PDFs can be detected and previewed by extracting embedded JPEG images.
 - Forward/Reverse table rows are cropped into an editable image reader.
-- A lightweight offline OCR pass can fill candidate values for fixed-layout row images.
+- A lightweight OCR pass can fill candidate values for fixed-layout row images.
 - OCR candidates are color-coded by confidence.
 - Row values are validated before being applied to the Kegel row editor.
 - OCR output must be visually checked before applying it.
 - The Kegel row table in the UI is an intermediate/manual correction layer.
 
-## Offline Policy
+## Development Policy
 
-The app is designed for offline lane-maintenance environments.
+The app is currently allowed to use online CDN assets for faster OCR development.
 
-- No CDN
-- No external API
-- No cloud upload
+- PDF.js and Tesseract.js may be loaded from CDN.
+- OCR language data may be loaded from public Tesseract data hosting.
+- No PDF or XLSX is intentionally uploaded to an application server.
 - No external font or image dependency
-- Runs as a single local HTML file
+- The main app still runs as a local HTML file.
 
 ## How To Use
 
@@ -46,12 +46,12 @@ The included files are source/prototype files only. Users should supply their ow
 
 ## Files
 
-- `index.html`: Offline web prototype
-- `OFFLINE_DEVELOPMENT.md`: Development policy and implementation notes
+- `index.html`: Web prototype
+- `OFFLINE_DEVELOPMENT.md`: Current development policy and implementation notes
 
 ## Next Work
 
-1. Improve OCR accuracy for the extracted Forward/Reverse row images.
+1. Improve OCR accuracy for the extracted Forward/Reverse row images using PDF.js/Tesseract.
 2. Validate generated XLSX files in Excel on real Brunswick templates.
 3. Compare multiple official conversion pairs.
 4. Add template-specific cell mapping profiles if different Brunswick workbook versions vary.

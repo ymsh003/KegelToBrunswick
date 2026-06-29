@@ -329,6 +329,14 @@
       margin-top: 12px;
     }
 
+    .structured-grid {
+      margin-top: 12px;
+    }
+
+    .structured-grid textarea {
+      min-height: 260px;
+    }
+
     .log {
       height: 360px;
       background: #101828;
@@ -449,6 +457,10 @@
           <textarea id="rawText" spellcheck="false" readonly></textarea>
         </div>
       </div>
+      <div class="structured-grid">
+        <h2>構造化データ JSON</h2>
+        <textarea id="structuredText" spellcheck="false" readonly></textarea>
+      </div>
     </section>
   </main>
 
@@ -500,6 +512,7 @@
       $("zoomRange").value = "100";
       $("zoomLabel").textContent = "100%";
       $("formattedText").value = "";
+      $("structuredText").value = "";
       $("rowsText").value = "";
       $("rawText").value = "";
       $("cropList").innerHTML = "";
@@ -865,6 +878,7 @@
       $("rowMetric").textContent = "-";
       $("cropList").innerHTML = "";
       $("formattedText").value = "";
+      $("structuredText").value = "";
       $("rowsText").value = "";
       $("rawText").value = "";
       $("prevPageBtn").disabled = state.pageNumber <= 1;
@@ -1192,6 +1206,86 @@
         .filter(Number.isFinite);
     }
 
+    function firstNumber(text, pattern) {
+      const match = normalizeText(text).match(pattern);
+      return match ? Number(match[1]) : null;
+    }
+
+    function parseMetadata(text) {
+      const normalized = normalizeText(text);
+      return {
+        patternDistanceFt: firstNumber(normalized, /(?:DISTANCE|PATTERN DISTANCE)\D+(\d+(?:\.\d+)?)/i),
+        reverseBrushDropFt: firstNumber(normalized, /(?:DROP BRUSH|REVERSE BRUSH DROP)\D+(\d+(?:\.\d+)?)/i),
+        oilPerBoardUl: firstNumber(normalized, /(?:PUMP|OIL PER BOARD)\D+(\d+(?:\.\d+)?)/i),
+        forwardOilMl: firstNumber(normalized, /FORWARD\D+(\d+(?:\.\d+)?)/i),
+        reverseOilMl: firstNumber(normalized, /REVERSE\D+(\d+(?:\.\d+)?)/i),
+        totalOilMl: firstNumber(normalized, /(?:VOLUME|TOTAL)\D+(\d+(?:\.\d+)?)/i),
+        ratio: firstNumber(normalized, /RATIO\D+(\d+(?:\.\d+)?)/i)
+      };
+    }
+
+    function sectionText(sections, key) {
+      return sections.find(section => section.key === key)?.text || "";
+    }
+
+    function buildStructuredData(sections) {
+      const forwardRows = parseRows(sectionText(sections, "forward"), "forward");
+      const reverseRows = parseRows(sectionText(sections, "reverse"), "reverse");
+      const ratioValues = extractRatioValues(sectionText(sections, "ratio"));
+      const metadata = parseMetadata(sectionText(sections, "metadata"));
+      const forwardOilUl = forwardRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0);
+      const reverseOilUl = reverseRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0);
+      return {
+        schema: "kegel-to-brunswick.intermediate.v1",
+        sourceFile: state.fileName || $("pdfFile").files[0]?.name || "",
+        pageNumber: state.pageNumber,
+        generatedAt: new Date().toISOString(),
+        metadata,
+        forwardRows,
+        reverseRows,
+        ratioValues,
+        totals: {
+          forwardRowCount: forwardRows.length,
+          reverseRowCount: reverseRows.length,
+          forwardOilUl,
+          reverseOilUl,
+          totalOilUl: forwardOilUl + reverseOilUl
+        },
+        boardDistribution: estimateBoardDistribution([...forwardRows, ...reverseRows]),
+        ocrProfiles: Object.fromEntries(sections.map(section => [section.key, section.profile || ""]))
+      };
+    }
+
+    function boardsBetween(start, stop) {
+      const a = boardNumber(start);
+      const b = boardNumber(stop);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return [];
+      const min = Math.max(1, Math.min(a, b));
+      const max = Math.min(39, Math.max(a, b));
+      const boards = [];
+      for (let board = min; board <= max; board++) boards.push(board);
+      return boards;
+    }
+
+    function estimateBoardDistribution(rows) {
+      const distribution = Array.from({ length: 39 }, (_, index) => ({
+        board: index + 1,
+        oilUl: 0
+      }));
+      rows.forEach(row => {
+        const boards = boardsBetween(row.start, row.stop);
+        if (!boards.length || !Number.isFinite(row.oil)) return;
+        const perBoard = row.oil / boards.length;
+        boards.forEach(board => {
+          distribution[board - 1].oilUl += perBoard;
+        });
+      });
+      return distribution.map(item => ({
+        board: item.board,
+        oilUl: Math.round(item.oilUl * 10) / 10
+      }));
+    }
+
     function formatSection(section) {
       const def = boxDefinitions[section.key];
       const lines = cleanLines(section.text);
@@ -1301,11 +1395,14 @@
         const rows = sections
           .filter(section => section.direction)
           .flatMap(section => parseRows(section.text, section.direction));
+        const structured = buildStructuredData(sections);
         $("formattedText").value = formatManualOutput(cropItems, sections);
+        $("structuredText").value = JSON.stringify(structured, null, 2);
         $("rawText").value = rawText;
         $("rowsText").value = rowsToCsv(rows);
         $("rowMetric").textContent = rows.length;
         log("行データ検出: " + rows.length + "行");
+        log("構造化データ: Forward " + structured.totals.forwardRowCount + "行 / Reverse " + structured.totals.reverseRowCount + "行 / 合計 " + structured.totals.totalOilUl + "uL");
         setProgress(100, rows.length ? "OCR完了: " + rows.length + "行を検出しました。" : "OCR完了: 行データは未確定です。");
       } catch (error) {
         log("エラー: " + (error?.message || error));

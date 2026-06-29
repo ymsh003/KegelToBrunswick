@@ -43,7 +43,7 @@
 
     main {
       display: grid;
-      grid-template-columns: minmax(300px, 380px) 1fr;
+      grid-template-columns: minmax(280px, 340px) 1fr;
       gap: 16px;
       padding: 16px;
     }
@@ -145,13 +145,14 @@
 
     .layout {
       display: grid;
-      grid-template-columns: 1.1fr .9fr;
+      grid-template-columns: minmax(680px, 1fr) minmax(220px, 300px);
       gap: 16px;
     }
 
     .canvas-wrap {
       position: relative;
-      max-height: 720px;
+      max-height: calc(100vh - 210px);
+      min-height: 680px;
       overflow: auto;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -167,7 +168,6 @@
 
     canvas {
       display: block;
-      max-width: 100%;
       height: auto;
     }
 
@@ -208,11 +208,47 @@
       gap: 10px;
       align-items: stretch;
       margin-bottom: 10px;
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      padding-bottom: 10px;
+      background: var(--panel);
+    }
+
+    .canvas-controls {
+      display: grid;
+      gap: 8px;
     }
 
     .canvas-toolbar .tool-grid {
       grid-template-columns: repeat(6, minmax(92px, 1fr));
       margin-top: 0;
+    }
+
+    .zoom-tools {
+      display: grid;
+      grid-template-columns: auto auto minmax(160px, 1fr) 58px auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .zoom-tools button {
+      width: auto;
+      min-width: 58px;
+      margin: 0;
+      background: #eef2f6;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+
+    .zoom-tools input {
+      width: 100%;
+    }
+
+    .zoom-tools strong {
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
     }
 
     .tool-grid button,
@@ -321,6 +357,9 @@
     @media (max-width: 980px) {
       main, .layout, .result-grid, .canvas-toolbar { grid-template-columns: 1fr; }
       .canvas-toolbar .tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .canvas-wrap { min-height: 520px; }
+      .zoom-tools { grid-template-columns: auto auto 1fr 52px; }
+      .zoom-tools .wide { grid-column: span 2; }
       #ocrBtn { width: 100%; }
     }
   </style>
@@ -365,19 +404,29 @@
     <section>
       <h2>結果表示</h2>
       <div class="canvas-toolbar">
-        <div class="tool-grid" id="toolGrid">
-          <button data-box="metadata" class="active">メタデータ</button>
-          <button data-box="forward">Forward</button>
-          <button data-box="reverse">Reverse</button>
-          <button data-box="ratio">Ratio</button>
-          <button data-box="graph">Pattern Graph</button>
-          <button data-box="lane">レーンモニター</button>
+        <div class="canvas-controls">
+          <div class="tool-grid" id="toolGrid">
+            <button data-box="metadata" class="active">メタデータ</button>
+            <button data-box="forward">Forward</button>
+            <button data-box="reverse">Reverse</button>
+            <button data-box="ratio">Ratio</button>
+            <button data-box="graph">Pattern Graph</button>
+            <button data-box="lane">レーンモニター</button>
+          </div>
+          <div class="zoom-tools">
+            <button id="zoomOutBtn" type="button" disabled>縮小</button>
+            <button id="zoomInBtn" type="button" disabled>拡大</button>
+            <input id="zoomRange" type="range" min="50" max="220" step="10" value="100" disabled>
+            <strong id="zoomLabel">100%</strong>
+            <button id="fitWidthBtn" class="wide" type="button" disabled>幅に合わせる</button>
+            <button id="actualSizeBtn" class="wide" type="button" disabled>原寸</button>
+          </div>
         </div>
         <button id="ocrBtn" disabled>指定範囲をOCR</button>
       </div>
       <div class="layout">
         <div>
-          <div class="canvas-wrap">
+          <div class="canvas-wrap" id="canvasWrap">
             <div class="canvas-stage" id="canvasStage">
               <canvas id="pageCanvas"></canvas>
               <svg class="selection-layer" id="selectionLayer"></svg>
@@ -414,6 +463,7 @@
       fileName: "",
       pageNumber: 1,
       pageCanvas: null,
+      zoom: 1,
       activeBox: "metadata",
       boxes: {},
       drag: null
@@ -447,6 +497,8 @@
       $("pageMetric").textContent = "-";
       $("candidateMetric").textContent = "-";
       $("rowMetric").textContent = "-";
+      $("zoomRange").value = "100";
+      $("zoomLabel").textContent = "100%";
       $("formattedText").value = "";
       $("rowsText").value = "";
       $("rawText").value = "";
@@ -455,9 +507,13 @@
       const canvas = $("pageCanvas");
       canvas.width = 1;
       canvas.height = 1;
+      canvas.style.width = "";
+      canvas.style.height = "";
       $("selectionLayer").innerHTML = "";
       state.pageCanvas = null;
+      state.zoom = 1;
       state.boxes = {};
+      setZoomControlsEnabled(false);
     }
 
     function setProgress(percent, status) {
@@ -697,9 +753,52 @@
       ctx.drawImage(source, 0, 0);
       const layer = $("selectionLayer");
       layer.setAttribute("viewBox", "0 0 " + source.width + " " + source.height);
-      layer.style.width = target.clientWidth + "px";
-      layer.style.height = target.clientHeight + "px";
+      applyZoom();
       renderSelectionLayer();
+    }
+
+    function setZoom(value, keepCenter = true) {
+      const wrap = $("canvasWrap");
+      const oldWidth = $("pageCanvas").clientWidth || 1;
+      const oldHeight = $("pageCanvas").clientHeight || 1;
+      const centerX = (wrap.scrollLeft + wrap.clientWidth / 2) / oldWidth;
+      const centerY = (wrap.scrollTop + wrap.clientHeight / 2) / oldHeight;
+      state.zoom = Math.max(0.5, Math.min(2.2, value));
+      applyZoom();
+      if (keepCenter && state.pageCanvas) {
+        const newWidth = $("pageCanvas").clientWidth || 1;
+        const newHeight = $("pageCanvas").clientHeight || 1;
+        wrap.scrollLeft = Math.max(0, centerX * newWidth - wrap.clientWidth / 2);
+        wrap.scrollTop = Math.max(0, centerY * newHeight - wrap.clientHeight / 2);
+      }
+    }
+
+    function applyZoom() {
+      if (!state.pageCanvas) return;
+      const target = $("pageCanvas");
+      const layer = $("selectionLayer");
+      const cssWidth = Math.round(state.pageCanvas.width * state.zoom);
+      const cssHeight = Math.round(state.pageCanvas.height * state.zoom);
+      target.style.width = cssWidth + "px";
+      target.style.height = cssHeight + "px";
+      layer.style.width = cssWidth + "px";
+      layer.style.height = cssHeight + "px";
+      $("zoomRange").value = Math.round(state.zoom * 100);
+      $("zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
+    }
+
+    function fitPageWidth() {
+      if (!state.pageCanvas) return;
+      const wrap = $("canvasWrap");
+      const available = Math.max(320, wrap.clientWidth - 24);
+      setZoom(available / state.pageCanvas.width, false);
+      wrap.scrollLeft = 0;
+    }
+
+    function setZoomControlsEnabled(enabled) {
+      ["zoomOutBtn", "zoomInBtn", "zoomRange", "fitWidthBtn", "actualSizeBtn"].forEach(id => {
+        $(id).disabled = !enabled;
+      });
     }
 
     function renderSelectionLayer() {
@@ -758,7 +857,9 @@
       log("ページ表示: " + state.pageNumber + "/" + state.pdf.numPages);
       state.pageCanvas = await renderPage(state.pdf, state.pageNumber, 2.4);
       state.boxes = {};
+      state.zoom = 0.9;
       drawPageOnly(state.pageCanvas);
+      setZoomControlsEnabled(true);
       $("pageMetric").textContent = state.pageNumber + "/" + state.pdf.numPages;
       $("candidateMetric").textContent = "0";
       $("rowMetric").textContent = "-";
@@ -1039,6 +1140,7 @@
       $("prevPageBtn").disabled = true;
       $("nextPageBtn").disabled = true;
       $("ocrBtn").disabled = true;
+      setZoomControlsEnabled(false);
       if (file) {
         $("status").textContent = "選択済み: " + file.name;
         log("ファイル選択: " + file.name);
@@ -1101,8 +1203,13 @@
 
     $("runBtn").addEventListener("click", analyze);
     $("ocrBtn").addEventListener("click", runManualOcr);
+    $("zoomOutBtn").addEventListener("click", () => setZoom(state.zoom - 0.1));
+    $("zoomInBtn").addEventListener("click", () => setZoom(state.zoom + 0.1));
+    $("zoomRange").addEventListener("input", event => setZoom(Number(event.target.value) / 100));
+    $("fitWidthBtn").addEventListener("click", fitPageWidth);
+    $("actualSizeBtn").addEventListener("click", () => setZoom(1));
     window.addEventListener("resize", () => {
-      if (state.pageCanvas) drawPageOnly(state.pageCanvas);
+      if (state.pageCanvas) applyZoom();
     });
     resetView();
   </script>

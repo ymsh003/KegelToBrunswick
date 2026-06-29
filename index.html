@@ -372,7 +372,7 @@
       <div class="ocr-progress" id="ocrProgress" hidden>
         <div class="ocr-progress-head">
           <span id="ocrProgressTitle">待機中</span>
-          <span id="ocrProgressElapsed">0秒</span>
+          <span id="ocrProgressElapsed">経過 0秒</span>
         </div>
         <div class="ocr-progress-bar"><div class="ocr-progress-fill" id="ocrProgressFill"></div></div>
         <div class="ocr-progress-stage" id="ocrProgressStage">-</div>
@@ -1804,9 +1804,13 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
 
     function pickTableRegion(lines, direction) {
       const fallback = getFallbackTableRegions().find(region => region.direction === direction);
-      const limits = direction === "forward"
-        ? { topMin: 125, topMax: 230, bottomMax: 450, minH: 145, maxH: 330 }
-        : { topMin: 360, topMax: 520, bottomMax: 750, minH: 145, maxH: 340 };
+      const limits = {
+        topMin: Math.max(80, fallback.box.y - 95),
+        topMax: Math.min(760, fallback.box.y + 95),
+        bottomMax: Math.min(850, fallback.box.y + fallback.box.h + 135),
+        minH: Math.max(95, fallback.box.h * 0.55),
+        maxH: Math.min(380, fallback.box.h * 1.65)
+      };
       let best = null;
       lines.forEach(top => {
         if (top < limits.topMin || top > limits.topMax) return;
@@ -1831,6 +1835,30 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
           h: Math.min(760, best.bottom + padBottom) - Math.max(90, best.top - padTop)
         }
       };
+    }
+
+    function isWeakDetectedRegion(region) {
+      if (!region) return true;
+      if (region.edgeHit) return true;
+      if (!Number.isFinite(region.templateScore)) return true;
+      return region.templateScore > 0.42;
+    }
+
+    function mergeTableLineRegions(source, regions) {
+      const lines = detectHorizontalTableLines(source);
+      window.lastDetectedTableLines = lines;
+      if (lines.length < 6) return regions;
+      return regions.map(region => {
+        if (region.direction !== "forward" && region.direction !== "reverse") return region;
+        const lineRegion = pickTableRegion(lines, region.direction);
+        if (!lineRegion) return region;
+        const refined = { ...lineRegion, box: detectVerticalTableBounds(source, lineRegion.box), detectionMode: "table-lines" };
+        if (isWeakDetectedRegion(region)) return refined;
+        const deltaY = Math.abs(region.box.y - refined.box.y);
+        const deltaH = Math.abs(region.box.h - refined.box.h);
+        if (deltaY > 70 || deltaH > 75) return refined;
+        return region;
+      });
     }
 
     function findInkBounds(source, box, pad = 80) {
@@ -2099,10 +2127,10 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       const seedRegions = getFallbackCropRegions();
       const regions = [];
       for (const region of seedRegions) regions.push(await optimizeRegionByTemplate(source, region));
-      window.lastDetectedTableLines = [];
-      window.lastDetectedTableRegions = regions.filter(region => region.direction === "forward" || region.direction === "reverse");
-      window.lastDetectedCropRegions = regions;
-      return regions;
+      const mergedRegions = mergeTableLineRegions(source, regions);
+      window.lastDetectedTableRegions = mergedRegions.filter(region => region.direction === "forward" || region.direction === "reverse");
+      window.lastDetectedCropRegions = mergedRegions;
+      return mergedRegions;
     }
 
     async function detectTableRegions(source) {
@@ -2325,13 +2353,13 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       panel.hidden = false;
       panel.classList.remove("done", "error");
       $("ocrProgressTitle").textContent = title;
-      $("ocrProgressElapsed").textContent = "0\u79d2";
+      $("ocrProgressElapsed").textContent = "\u7d4c\u904e 0\u79d2";
       $("ocrProgressFill").style.width = "0%";
       $("ocrProgressStage").textContent = "\u958b\u59cb\u3057\u3066\u3044\u307e\u3059";
-      $("ocrProgressDetail").textContent = "\u6e96\u5099\u4e2d\u3067\u3059\u3002\u521d\u56de\u306fOCR\u30a8\u30f3\u30b8\u30f3\u306e\u8aad\u307f\u8fbc\u307f\u306b\u6642\u9593\u304c\u304b\u304b\u308b\u3053\u3068\u304c\u3042\u308a\u307e\u3059\u3002";
+      $("ocrProgressDetail").textContent = "\u6e96\u5099\u4e2d\u3067\u3059\u3002\u8868\u793a\u3059\u308b\u306e\u306f\u7d4c\u904e\u6642\u9593\u3060\u3051\u3067\u3001\u6b8b\u308a\u6642\u9593\u306f\u63a8\u5b9a\u3057\u307e\u305b\u3093\u3002";
       if (ocrProgressState.timer) clearInterval(ocrProgressState.timer);
       ocrProgressState.timer = setInterval(() => {
-        const elapsed = formatElapsed(Date.now() - ocrProgressState.startedAt);
+        const elapsed = "\u7d4c\u904e " + formatElapsed(Date.now() - ocrProgressState.startedAt);
         const elapsedEl = $("ocrProgressElapsed");
         if (elapsedEl) elapsedEl.textContent = elapsed;
       }, 500);
@@ -2345,7 +2373,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       $("ocrProgressFill").style.width = Math.max(0, Math.min(100, pct)) + "%";
       $("ocrProgressStage").textContent = stage;
       $("ocrProgressDetail").textContent = detail || "\u51e6\u7406\u4e2d\u3067\u3059\u3002\u753b\u9762\u3092\u9589\u3058\u305a\u306b\u304a\u5f85\u3061\u304f\u3060\u3055\u3044\u3002";
-      $("ocrProgressElapsed").textContent = formatElapsed(Date.now() - ocrProgressState.startedAt);
+      $("ocrProgressElapsed").textContent = "\u7d4c\u904e " + formatElapsed(Date.now() - ocrProgressState.startedAt);
     }
 
     function finishOcrProgress(message, ok = true) {
@@ -2359,7 +2387,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       $("ocrProgressFill").style.width = "100%";
       $("ocrProgressStage").textContent = ok ? "\u5b8c\u4e86" : "\u505c\u6b62\u3057\u307e\u3057\u305f";
       $("ocrProgressDetail").textContent = message;
-      $("ocrProgressElapsed").textContent = formatElapsed(Date.now() - ocrProgressState.startedAt);
+      $("ocrProgressElapsed").textContent = "\u7d4c\u904e " + formatElapsed(Date.now() - ocrProgressState.startedAt);
     }
 
     function canvasByCropKey(key) {
@@ -2392,27 +2420,25 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         if (worker.setParameters) await worker.setParameters({ tessedit_pageseg_mode: psm, preserve_interword_spaces: "1" });
         const stage = "OCR: " + label;
         setPdfStatus(stage + " \u3092\u8aad\u307f\u53d6\u3063\u3066\u3044\u307e\u3059...");
-        updateOcrProgress(step, stage, label + " \u306e\u5207\u308a\u51fa\u3057\u753b\u50cf\u3092OCR\u3057\u3066\u3044\u307e\u3059\u3002\u3053\u3053\u306f\u6570\u5341\u79d2\u304b\u304b\u308b\u3053\u3068\u304c\u3042\u308a\u307e\u3059\u3002");
+        updateOcrProgress(step, stage, label + " \u306e\u5207\u308a\u51fa\u3057\u753b\u50cf\u3092OCR\u3057\u3066\u3044\u307e\u3059\u3002\u6b8b\u308a\u6642\u9593\u306f\u63a8\u5b9a\u3057\u307e\u305b\u3093\u3002");
         const factor = key === "metadata" || key === "ratio" ? 4 : 3;
         const result = await worker.recognize(makeBlockOcrCanvas(canvas, factor, 190, 1.8, mode));
         return result && result.data && result.data.text ? result.data.text : "";
       };
-      const metadataText = await recognizeBlock("metadata", "Metadata", "6", "raw", 4);
+      const metadataText = "";
+      const ratioRaw = "";
       window.lastMetadataOcrText = metadataText;
-      updateMetadataFromPdfText(metadataText);
-      const forwardRaw = await recognizeBlock("forward", "Forward table", "6", "enhance", 5);
-      const reverseRaw = await recognizeBlock("reverse", "Reverse table", "6", "enhance", 6);
-      const ratioRaw = await recognizeBlock("ratio", "Track zone ratio", "6", "raw", 7);
-      window.lastTableOcrSections = [
-        { direction: "forward", text: forwardRaw },
-        { direction: "reverse", text: reverseRaw }
-      ];
       window.lastRatioOcrText = ratioRaw;
-      updateMetadataFromPdfText(metadataText + "\n" + ratioRaw);
-      parts.push("Metadata\n" + metadataText);
-      parts.push("Forward\n" + normalizeOcrKegelText(forwardRaw));
-      parts.push("Reverse\n" + normalizeOcrKegelText(reverseRaw));
-      parts.push("Track zone ratio\n" + ratioRaw);
+      const forwardRaw = await recognizeBlock("forward", "Forward table", "6", "enhance", 4);
+      const reverseRaw = await recognizeBlock("reverse", "Reverse table", "6", "enhance", 5);
+      const forwardText = normalizeOcrKegelText(forwardRaw);
+      const reverseText = normalizeOcrKegelText(reverseRaw);
+      window.lastTableOcrSections = [
+        { direction: "forward", text: forwardText },
+        { direction: "reverse", text: reverseText }
+      ];
+      parts.push("Forward\n" + forwardText);
+      parts.push("Reverse\n" + reverseText);
       return parts.join("\n");
     }
 
@@ -2445,7 +2471,10 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       }
       return parts.join("\n");
     }
+    let cachedOnlineOcrWorker = null;
+
     async function createOnlineOcrWorker() {
+      if (cachedOnlineOcrWorker) return cachedOnlineOcrWorker;
       await loadScriptOnce("https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js", "Tesseract");
       const options = {
         logger: message => {
@@ -2460,14 +2489,20 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         langPath: "https://tessdata.projectnaptha.com/4.0.0"
       };
       try {
-        return await Tesseract.createWorker("eng", 1, options);
+        cachedOnlineOcrWorker = await Tesseract.createWorker("eng", 1, options);
+        return cachedOnlineOcrWorker;
       } catch (_) {
         const worker = await Tesseract.createWorker(options);
         if (worker.loadLanguage) await worker.loadLanguage("eng");
         if (worker.initialize) await worker.initialize("eng");
-        return worker;
+        cachedOnlineOcrWorker = worker;
+        return cachedOnlineOcrWorker;
       }
     }
+
+    window.addEventListener("beforeunload", () => {
+      if (cachedOnlineOcrWorker && cachedOnlineOcrWorker.terminate) cachedOnlineOcrWorker.terminate();
+    });
 
     function describeDetectedRegions(regions) {
       return regions.map(region => {
@@ -2527,7 +2562,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         setPdfStatus("\u5148\u306bKegel PDF\u3092\u9078\u629e\u3057\u3066\u304f\u3060\u3055\u3044\u3002");
         return;
       }
-      startOcrProgress("\u5207\u308a\u51fa\u3057OCR\u5b9f\u884c", 8);
+      startOcrProgress("\u5207\u308a\u51fa\u3057OCR\u5b9f\u884c", 6);
       const button = $("onlineOcrBtn");
       button.disabled = true;
       const originalButtonText = button.textContent;
@@ -2539,7 +2574,7 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         worker = await createOnlineOcrWorker();
         const text = await recognizeDetectedBlocks(worker);
         window.lastOcrText = text;
-        updateOcrProgress(8, "CSV\u5316", "OCR\u7d50\u679c\u3092Kegel Rows\u5f62\u5f0f\u306b\u5909\u63db\u3057\u3066\u3044\u307e\u3059\u3002");
+        updateOcrProgress(6, "CSV\u5316", "OCR\u7d50\u679c\u3092Kegel Rows\u5f62\u5f0f\u306b\u5909\u63db\u3057\u3066\u3044\u307e\u3059\u3002");
         const rows = repairKegelRows((window.lastTableOcrSections || []).flatMap(section => parseKegelRowsFromText(section.text, section.direction)));
         const tableCsvRows = rowsToCsv(rows).split("\n").filter(Boolean);
         if (tableCsvRows.length) {
@@ -2553,10 +2588,10 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
           finishOcrProgress("OCR\u306f\u5b8c\u4e86\u3057\u307e\u3057\u305f\u304c\u3001\u884c\u30c7\u30fc\u30bf\u3068\u3057\u3066\u78ba\u5b9a\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002OCR\u6587\u5b57\u5217\u3092Kegel Rows\u3078\u8868\u793a\u3057\u3066\u3044\u307e\u3059\u3002", false);
         }
       } catch (err) {
+        if (worker && worker === cachedOnlineOcrWorker) cachedOnlineOcrWorker = null;
         setPdfStatus("Online OCR\u30a8\u30e9\u30fc: " + err.message);
         finishOcrProgress("Online OCR\u30a8\u30e9\u30fc: " + err.message, false);
       } finally {
-        if (worker && worker.terminate) await worker.terminate();
         button.disabled = false;
         button.textContent = originalButtonText;
       }

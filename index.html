@@ -989,8 +989,16 @@
     function normalizeFeetValue(value) {
       if (!Number.isFinite(value)) return value;
       const abs = Math.abs(value);
-      if (Number.isInteger(value) && abs >= 10 && abs <= 450) return Math.round(value) / 10;
-      return value;
+      let normalized = value;
+      if (Number.isInteger(value) && abs >= 10 && abs <= 450) normalized = Math.round(value) / 10;
+      return Math.round(normalized * 10) / 10;
+    }
+
+    function normalizeRatioValue(token) {
+      const value = normalizeNumericToken(token);
+      if (!Number.isFinite(value)) return NaN;
+      const normalized = value >= 10 && Number.isInteger(value) ? value / 100 : value;
+      return Math.round(normalized * 10) / 10;
     }
 
     function normalizeOilValue(token) {
@@ -1060,6 +1068,21 @@
       return tokens;
     }
 
+    function normalizeRowNumber(token) {
+      const raw = String(token || "").trim();
+      if (!raw) return NaN;
+      if (!/^[0-9OoQ©S$§ZzIl!|BbGg:]+$/.test(raw)) return NaN;
+      const fixed = raw
+        .replace(/[OoQ©]/g, "0")
+        .replace(/[S$§]/g, "5")
+        .replace(/[Zz]/g, "2")
+        .replace(/[Il!|]/g, "1")
+        .replace(/[BbGg:]/g, "8")
+        .replace(/[^\d]/g, "");
+      if (!fixed) return NaN;
+      return Number(fixed);
+    }
+
     function boardNumber(board) {
       const match = String(board || "").match(/^(\d{1,2})[LR]$/);
       return match ? Number(match[1]) : NaN;
@@ -1083,7 +1106,7 @@
       String(text || "").split(/\r?\n/).forEach(line => {
         const tokens = prepareRowTokens(line);
         if (tokens.length < 9) return;
-        const rowNo = normalizeNumericToken(tokens[0]);
+        const rowNo = normalizeRowNumber(tokens[0]);
         if (!Number.isFinite(rowNo) || rowNo < 1 || rowNo > 30) return;
         const start = normalizeBoardToken(tokens[1], "start");
         const stop = normalizeBoardToken(tokens[2], "stop");
@@ -1160,6 +1183,15 @@
         .filter(Boolean);
     }
 
+    function extractRatioValues(text) {
+      const ratioLine = cleanLines(text).find(line => /\bRATIO\b/i.test(line));
+      if (!ratioLine) return [];
+      return ratioLine
+        .split(/\s+/)
+        .map(normalizeRatioValue)
+        .filter(Number.isFinite);
+    }
+
     function formatSection(section) {
       const def = boxDefinitions[section.key];
       const lines = cleanLines(section.text);
@@ -1170,6 +1202,11 @@
         const parsed = rows.length
           ? "\n\n抽出行:\n" + rowsToCsv(rows)
           : "\n\n抽出行: 未検出";
+        return header + "\n" + lines.join("\n") + parsed;
+      }
+      if (section.key === "ratio") {
+        const ratios = extractRatioValues(section.text);
+        const parsed = ratios.length ? "\n\nRatio補正候補:\n" + ratios.join(", ") : "";
         return header + "\n" + lines.join("\n") + parsed;
       }
       return header + "\n" + lines.join("\n");

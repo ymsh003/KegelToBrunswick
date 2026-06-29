@@ -202,6 +202,19 @@
       margin-top: 10px;
     }
 
+    .canvas-toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: stretch;
+      margin-bottom: 10px;
+    }
+
+    .canvas-toolbar .tool-grid {
+      grid-template-columns: repeat(6, minmax(92px, 1fr));
+      margin-top: 0;
+    }
+
     .tool-grid button,
     .page-grid button {
       margin: 0;
@@ -225,6 +238,9 @@
 
     #ocrBtn {
       background: #155eef;
+      width: auto;
+      min-width: 150px;
+      margin-top: 0;
     }
 
 
@@ -272,7 +288,7 @@
 
     .result-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
       margin-top: 12px;
     }
@@ -303,7 +319,9 @@
     }
 
     @media (max-width: 980px) {
-      main, .layout, .result-grid { grid-template-columns: 1fr; }
+      main, .layout, .result-grid, .canvas-toolbar { grid-template-columns: 1fr; }
+      .canvas-toolbar .tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      #ocrBtn { width: 100%; }
     }
   </style>
 </head>
@@ -327,19 +345,6 @@
       </section>
 
       <section style="margin-top:16px">
-        <h2>切り出し範囲</h2>
-        <div class="tool-grid" id="toolGrid">
-          <button data-box="metadata" class="active">メタデータ</button>
-          <button data-box="forward">Forward</button>
-          <button data-box="reverse">Reverse</button>
-          <button data-box="ratio">Ratio</button>
-          <button data-box="graph">Pattern Graph</button>
-        </div>
-        <button id="ocrBtn" disabled>指定範囲をOCR</button>
-        <div class="hint">同じ種類を選んで描き直すと、その範囲だけ更新されます。Graphは表示確認用で、行CSV解析には使いません。</div>
-      </section>
-
-      <section style="margin-top:16px">
         <h2>処理監視</h2>
         <div class="progress"><div id="progressFill"></div></div>
         <div class="status" id="status">PDFを選択してください。</div>
@@ -359,6 +364,17 @@
 
     <section>
       <h2>結果表示</h2>
+      <div class="canvas-toolbar">
+        <div class="tool-grid" id="toolGrid">
+          <button data-box="metadata" class="active">メタデータ</button>
+          <button data-box="forward">Forward</button>
+          <button data-box="reverse">Reverse</button>
+          <button data-box="ratio">Ratio</button>
+          <button data-box="graph">Pattern Graph</button>
+          <button data-box="lane">レーンモニター</button>
+        </div>
+        <button id="ocrBtn" disabled>指定範囲をOCR</button>
+      </div>
       <div class="layout">
         <div>
           <div class="canvas-wrap">
@@ -371,6 +387,10 @@
         <div class="crop-list" id="cropList"></div>
       </div>
       <div class="result-grid">
+        <div>
+          <h2>整形済み読み取り</h2>
+          <textarea id="formattedText" spellcheck="false" readonly></textarea>
+        </div>
         <div>
           <h2>読み取り行 CSV</h2>
           <textarea id="rowsText" spellcheck="false" readonly></textarea>
@@ -400,11 +420,12 @@
     };
 
     const boxDefinitions = {
-      metadata: { label: "メタデータ", color: "#155eef" },
-      forward: { label: "Forward", color: "#0f766e" },
-      reverse: { label: "Reverse", color: "#b42318" },
-      ratio: { label: "Ratio", color: "#b54708" },
-      graph: { label: "Pattern Graph", color: "#7a5af8" }
+      metadata: { label: "メタデータ", color: "#155eef", ocr: true },
+      forward: { label: "Forward", color: "#0f766e", ocr: true },
+      reverse: { label: "Reverse", color: "#b42318", ocr: true },
+      ratio: { label: "Ratio", color: "#b54708", ocr: true },
+      graph: { label: "Pattern Graph", color: "#7a5af8", ocr: false },
+      lane: { label: "レーンモニター", color: "#0086c9", ocr: false }
     };
 
     const columns = [
@@ -426,6 +447,7 @@
       $("pageMetric").textContent = "-";
       $("candidateMetric").textContent = "-";
       $("rowMetric").textContent = "-";
+      $("formattedText").value = "";
       $("rowsText").value = "";
       $("rawText").value = "";
       $("cropList").innerHTML = "";
@@ -741,6 +763,7 @@
       $("candidateMetric").textContent = "0";
       $("rowMetric").textContent = "-";
       $("cropList").innerHTML = "";
+      $("formattedText").value = "";
       $("rowsText").value = "";
       $("rawText").value = "";
       $("prevPageBtn").disabled = state.pageNumber <= 1;
@@ -857,6 +880,40 @@
       return rows.map(row => columns.map(key => key === "oil_uL" ? (row.oil ?? "") : (row[key] ?? "")).join(",")).join("\n");
     }
 
+    function cleanLines(text) {
+      return String(text || "")
+        .split(/\r?\n/)
+        .map(line => normalizeText(line))
+        .filter(Boolean);
+    }
+
+    function formatSection(section) {
+      const def = boxDefinitions[section.key];
+      const lines = cleanLines(section.text);
+      const header = "【" + def.label + "】";
+      if (!lines.length) return header + "\n読み取り文字列なし";
+      if (section.direction) {
+        const rows = parseRows(section.text, section.direction);
+        const parsed = rows.length
+          ? "\n\n抽出行:\n" + rowsToCsv(rows)
+          : "\n\n抽出行: 未検出";
+        return header + "\n" + lines.join("\n") + parsed;
+      }
+      return header + "\n" + lines.join("\n");
+    }
+
+    function formatManualOutput(cropItems, sections) {
+      const byKey = new Map(sections.map(section => [section.key, section]));
+      return cropItems.map(item => {
+        if (boxDefinitions[item.key].ocr === false) {
+          return "【" + item.label + "】\nOCR対象外。切り出し画像で確認します。";
+        }
+        return byKey.has(item.key)
+          ? formatSection(byKey.get(item.key))
+          : "【" + item.label + "】\n未読み取り";
+      }).join("\n\n");
+    }
+
     async function extractPdfTextRows(pdf) {
       let fullText = "";
       for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
@@ -899,10 +956,20 @@
       if (!state.pageCanvas) return;
       const cropItems = buildManualCropItems();
       if (!cropItems.length) return;
+      const ocrItems = cropItems.filter(item => boxDefinitions[item.key].ocr !== false);
+      if (!ocrItems.length) {
+        renderCropPreviews(cropItems);
+        $("formattedText").value = formatManualOutput(cropItems, []);
+        $("rawText").value = "";
+        $("rowsText").value = "";
+        $("rowMetric").textContent = "0";
+        setProgress(100, "OCR対象の範囲がありません。切り出し画像を確認してください。");
+        return;
+      }
       startTimer();
       $("ocrBtn").disabled = true;
       try {
-        log("手動指定範囲 OCR開始: " + cropItems.map(item => item.key).join(", "));
+        log("手動指定範囲 OCR開始: " + ocrItems.map(item => item.key).join(", "));
         renderCropPreviews(cropItems);
         setProgress(55, "指定範囲をOCRしています。");
         const worker = await loadTesseractWorker();
@@ -913,7 +980,7 @@
           });
         }
         const sections = [];
-        for (const item of cropItems) {
+        for (const item of ocrItems) {
           log(item.label + " OCR開始");
           const result = await worker.recognize(enhanceForOcr(item.canvas));
           const text = result?.data?.text || "";
@@ -924,6 +991,7 @@
         const rows = sections
           .filter(section => section.direction)
           .flatMap(section => parseRows(section.text, section.direction));
+        $("formattedText").value = formatManualOutput(cropItems, sections);
         $("rawText").value = rawText;
         $("rowsText").value = rowsToCsv(rows);
         $("rowMetric").textContent = rows.length;

@@ -1620,20 +1620,65 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       return pdfjs;
     }
 
+    async function extractKegelRowsFromPdfText(file) {
+      const pdfjs = await loadPdfJs();
+      const data = new Uint8Array(await file.arrayBuffer());
+      const pdf = await pdfjs.getDocument({ data }).promise;
+      const pageTexts = [];
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+        const page = await pdf.getPage(pageNumber);
+        const content = await page.getTextContent();
+        const items = (content.items || []).slice().sort((a, b) => {
+          const ay = a.transform ? a.transform[5] : 0;
+          const by = b.transform ? b.transform[5] : 0;
+          const ax = a.transform ? a.transform[4] : 0;
+          const bx = b.transform ? b.transform[4] : 0;
+          return Math.abs(by - ay) > 2 ? by - ay : ax - bx;
+        });
+        const lines = [];
+        let currentY = null;
+        let current = [];
+        items.forEach(item => {
+          const y = item.transform ? item.transform[5] : 0;
+          if (currentY === null || Math.abs(y - currentY) <= 2) current.push(item.str || "");
+          else {
+            if (current.join("").trim()) lines.push(current.join(" "));
+            current = [item.str || ""];
+          }
+          currentY = y;
+        });
+        if (current.join("").trim()) lines.push(current.join(" "));
+        pageTexts.push(lines.join("\n"));
+      }
+      const text = normalizeExtractedPdfText(pageTexts.join("\n\n"));
+      const rows = repairKegelRows(parseKegelRowsFromText(text));
+      return { text, rows, pageCount: pdf.numPages };
+    }
+
     async function renderPdfFirstPageForOcr(file) {
       const pdfjs = await loadPdfJs();
       const data = new Uint8Array(await file.arrayBuffer());
       const pdf = await pdfjs.getDocument({ data }).promise;
-      const page = await pdf.getPage(1);
-      const viewport = page.getViewport({ scale: 3.2 });
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      return canvas;
+      let best = null;
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+        const page = await pdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 2.6 });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const candidates = detectStructuralTableCandidates(canvas);
+        const score = candidates.slice(0, 2).reduce((sum, item) => sum + (item.score || 0), 0);
+        if (!best || score > best.score) best = { canvas, score, pageNumber, pageCount: pdf.numPages, candidates };
+        if (score >= 420 && candidates.length >= 2) break;
+      }
+      window.lastRenderedPdfPageNumber = best ? best.pageNumber : 1;
+      window.lastRenderedPdfPageCount = pdf.numPages;
+      window.lastRenderedPdfPageCandidates = best ? best.candidates : [];
+      return best ? best.canvas : document.createElement("canvas");
     }
 
     function enhanceOcrImageData(img, threshold = 188, contrast = 1.55) {
@@ -1802,6 +1847,119 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       };
     }
 
+    function grayAt(data, width, x, y) {
+      const i = (y * width + x) * 4;
+      return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    }
+
+    function structuralBoundsForBand(canvas, img, top, bottom) {
+      const width = canvas.width;
+      const bandHeight = Math.max(1, bottom - top);
+      const xs = [];
+      const minDark = Math.max(12, Math.round(bandHeight * 0.14));
+      for (let x = 0; x < Math.floor(width * 0.85); x++) {
+        let dark = 0;
+        for (let y = top; y <= bottom; y++) {
+          if (grayAt(img.data, width, x, y) < 155) dark++;
+        }
+        if (dark >= minDark) xs.push(x);
+      }
+      const verticalLines = clusterPositions(xs, 3);
+      const leftCandidates = verticalLines.filter(x => x < width * 0.25);
+      const rightCandidates = verticalLines.filter(x => x > width * 0.35 && x < width * 0.85);
+      let left = leftCandidates.length ? Math.min(...leftCandidates) : 0;
+      let right = rightCandidates.length ? Math.max(...rightCandidates) : Math.floor(width * 0.7);
+      if (right - left < 260) {
+        left = 0;
+        right = Math.floor(width * 0.7);
+      }
+      return {
+        x: Math.max(0, left - 8),
+        y: Math.max(0, top - 10),
+        w: Math.min(width, right + 8) - Math.max(0, left - 8),
+        h: Math.min(canvas.height, bottom + 12) - Math.max(0, top - 10),
+        vLines: verticalLines.length
+      };
+    }
+
+    function detectStructuralTableCandidates(source) {
+      const canvas = makeAnalysisCanvas(source);
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const width = canvas.width;
+      const height = canvas.height;
+      const ys = [];
+      for (let y = Math.floor(height * 0.04); y < Math.floor(height * 0.96); y++) {
+        let dark = 0;
+        for (let x = 0; x < Math.floor(width * 0.82); x++) {
+          if (grayAt(img.data, width, x, y) < 145) dark++;
+        }
+        if (dark > Math.max(110, width * 0.13)) ys.push(y);
+      }
+      window.lastDetectedTableLines = clusterPositions(ys, 2);
+      const linePositions = window.lastDetectedTableLines;
+      const groups = [];
+      let current = [];
+      linePositions.forEach(y => {
+        if (!current.length || y - current[current.length - 1] < 44) current.push(y);
+        else {
+          if (current.length >= 4) groups.push(current);
+          current = [y];
+        }
+      });
+      if (current.length >= 4) groups.push(current);
+
+      const candidates = [];
+      groups.forEach(group => {
+        const top = group[0];
+        const bottom = group[group.length - 1];
+        const bandHeight = bottom - top;
+        if (bandHeight < 45 || bandHeight > 360) return;
+        const addCandidate = (lines, topLine, bottomLine) => {
+          const box = structuralBoundsForBand(canvas, img, topLine, bottomLine);
+          const score = lines.length * 8 + box.vLines * 2 + Math.min(40, box.w / 12) + (box.h > 80 ? 10 : 0) - (box.y < height * 0.08 ? 20 : 0);
+          if (box.w > 260 && box.vLines >= 8) candidates.push({ ...box, lines: lines.length, score: Math.round(score), detectionMode: "structural-lines" });
+        };
+        let splitAt = -1;
+        let bestGap = 0;
+        for (let i = 1; i < group.length; i++) {
+          const gap = group[i] - group[i - 1];
+          if (gap > bestGap) {
+            bestGap = gap;
+            splitAt = i;
+          }
+        }
+        if (bandHeight > 230 && group.length >= 12 && bestGap > 22 && splitAt > 3 && group.length - splitAt > 3) {
+          addCandidate(group.slice(0, splitAt), group[0], group[splitAt - 1]);
+          addCandidate(group.slice(splitAt), group[splitAt], group[group.length - 1]);
+        } else {
+          addCandidate(group, top, bottom);
+        }
+      });
+      return candidates.sort((a, b) => b.score - a.score);
+    }
+
+    function chooseStructuralTablePair(candidates) {
+      const strong = candidates
+        .filter(item => item.score >= 145 && item.w >= 300 && item.h >= 70)
+        .sort((a, b) => a.y - b.y);
+      if (strong.length <= 2) return strong;
+      let best = strong.slice(0, 2);
+      let bestScore = -Infinity;
+      for (let i = 0; i < strong.length; i++) {
+        for (let j = i + 1; j < strong.length; j++) {
+          const gap = strong[j].y - strong[i].y;
+          if (gap < 80 || gap > 520) continue;
+          const pairScore = strong[i].score + strong[j].score - Math.abs(gap - 260) * 0.15;
+          if (pairScore > bestScore) {
+            bestScore = pairScore;
+            best = [strong[i], strong[j]];
+          }
+        }
+      }
+      return best.sort((a, b) => a.y - b.y).slice(0, 2);
+    }
+
     function pickTableRegion(lines, direction) {
       const fallback = getFallbackTableRegions().find(region => region.direction === direction);
       const limits = {
@@ -1845,6 +2003,22 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
     }
 
     function mergeTableLineRegions(source, regions) {
+      const structuralPair = chooseStructuralTablePair(detectStructuralTableCandidates(source));
+      if (structuralPair.length) {
+        const byDirection = {
+          forward: structuralPair[0],
+          reverse: structuralPair[1] || null
+        };
+        return regions.map(region => {
+          if (region.direction !== "forward" && region.direction !== "reverse") return region;
+          const structural = byDirection[region.direction];
+          if (!structural) return region;
+          if (isWeakDetectedRegion(region) || structural.score >= 165) {
+            return { ...region, box: structural, detectionMode: structural.detectionMode, structuralScore: structural.score };
+          }
+          return region;
+        });
+      }
       const lines = detectHorizontalTableLines(source);
       window.lastDetectedTableLines = lines;
       if (lines.length < 6) return regions;
@@ -2507,9 +2681,10 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
     function describeDetectedRegions(regions) {
       return regions.map(region => {
         const score = Number.isFinite(region.templateScore) ? " score:" + region.templateScore.toFixed(3) : "";
+        const structural = Number.isFinite(region.structuralScore) ? " structural:" + region.structuralScore : "";
         const edge = region.edgeHit ? " edge" : "";
         const tried = region.tried ? " tried:" + region.tried : "";
-        return region.label + " x:" + Math.round(region.box.x) + " y:" + Math.round(region.box.y) + " w:" + Math.round(region.box.w) + " h:" + Math.round(region.box.h) + score + edge + tried;
+        return region.label + " x:" + Math.round(region.box.x) + " y:" + Math.round(region.box.y) + " w:" + Math.round(region.box.w) + " h:" + Math.round(region.box.h) + score + structural + edge + tried;
       }).join(" / ");
     }
 
@@ -2544,7 +2719,8 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
         $("pdfPreview").classList.add("active");
         const regions = window.lastDetectedCropRegions && window.lastDetectedCropRegions.length ? window.lastDetectedCropRegions : [];
         const lineCount = Array.isArray(window.lastDetectedTableLines) ? window.lastDetectedTableLines.length : 0;
-        setPdfStatus("\u5207\u308a\u51fa\u3057\u5b8c\u4e86: " + describeDetectedRegions(regions) + " / \u691c\u51fa\u3057\u305f\u6a2a\u7f6b\u7dda " + lineCount + "\u672c");
+        const pageNote = window.lastRenderedPdfPageCount > 1 ? " / \u9078\u629e\u30da\u30fc\u30b8 " + window.lastRenderedPdfPageNumber + "/" + window.lastRenderedPdfPageCount : "";
+        setPdfStatus("\u5207\u308a\u51fa\u3057\u5b8c\u4e86" + pageNote + ": " + describeDetectedRegions(regions) + " / \u691c\u51fa\u3057\u305f\u6a2a\u7f6b\u7dda " + lineCount + "\u672c");
         updateOcrProgress(options.keepProgress ? 2 : 3, "\u5207\u308a\u51fa\u3057\u5b8c\u4e86", "OCR\u5bfe\u8c61\u306e\u753b\u50cf\u3092\u6e96\u5099\u3057\u307e\u3057\u305f\u3002");
         if (ownProgress) finishOcrProgress("\u5207\u308a\u51fa\u3057\u753b\u50cf\u306e\u6e96\u5099\u304c\u5b8c\u4e86\u3057\u307e\u3057\u305f\u3002", true);
       } catch (err) {
@@ -2569,6 +2745,16 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       button.textContent = "\u51e6\u7406\u4e2d...";
       let worker = null;
       try {
+        updateOcrProgress(1, "PDF\u30c6\u30ad\u30b9\u30c8\u78ba\u8a8d", "PDF\u5185\u306b\u8aad\u307f\u53d6\u308c\u308b\u8868\u30c6\u30ad\u30b9\u30c8\u304c\u3042\u308b\u304b\u78ba\u8a8d\u3057\u3066\u3044\u307e\u3059\u3002");
+        const textResult = await extractKegelRowsFromPdfText(file);
+        if (textResult.rows.length) {
+          $("kegelRows").value = rowsToCsv(textResult.rows);
+          window.lastOcrText = textResult.text;
+          refresh();
+          setPdfStatus("PDF\u30c6\u30ad\u30b9\u30c8\u304b\u3089 " + textResult.rows.length + " \u884c\u3092\u8aad\u307f\u53d6\u308a\u307e\u3057\u305f\u3002OCR\u306f\u5b9f\u884c\u3057\u3066\u3044\u307e\u305b\u3093\u3002");
+          finishOcrProgress(textResult.rows.length + "\u884c\u3092PDF\u30c6\u30ad\u30b9\u30c8\u304b\u3089\u53cd\u6620\u3057\u307e\u3057\u305f\u3002", true);
+          return;
+        }
         await extractPdfTableCropsOnly({ keepProgress: true });
         updateOcrProgress(3, "OCR\u30a8\u30f3\u30b8\u30f3\u6e96\u5099", "OCR\u30a8\u30f3\u30b8\u30f3\u3068\u82f1\u8a9e\u8a8d\u8b58\u30c7\u30fc\u30bf\u3092\u8aad\u307f\u8fbc\u3093\u3067\u3044\u307e\u3059\u3002\u521d\u56de\u306f\u3053\u3053\u304c\u4e00\u756a\u9577\u304f\u306a\u308a\u307e\u3059\u3002");
         worker = await createOnlineOcrWorker();
@@ -2601,6 +2787,19 @@ reverse,2L,2R,0,14,0.0,6.2,0`;
       const file = $("pdfFile").files[0];
       if (!file) return;
       $("kegelRows").value = "";
+      setPdfStatus("PDF\u30c6\u30ad\u30b9\u30c8\u3092\u78ba\u8a8d\u3057\u3066\u3044\u307e\u3059...");
+      try {
+        const textResult = await extractKegelRowsFromPdfText(file);
+        if (textResult.rows.length) {
+          $("kegelRows").value = rowsToCsv(textResult.rows);
+          window.lastOcrText = textResult.text;
+          refresh();
+          setPdfStatus("PDF\u30c6\u30ad\u30b9\u30c8\u304b\u3089 " + textResult.rows.length + " \u884c\u3092\u8aad\u307f\u53d6\u308a\u307e\u3057\u305f\u3002");
+          return;
+        }
+      } catch (err) {
+        setPdfStatus("PDF\u30c6\u30ad\u30b9\u30c8\u306f\u8aad\u307f\u53d6\u308c\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u753b\u50cf\u5207\u308a\u51fa\u3057\u306b\u9032\u307f\u307e\u3059\u3002");
+      }
       await extractPdfTableCropsOnly();
     }
 

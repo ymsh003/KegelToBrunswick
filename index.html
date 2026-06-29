@@ -402,6 +402,8 @@
         <h2>ファイル選択</h2>
         <label for="pdfFile">Kegel PDF</label>
         <input id="pdfFile" type="file" accept=".pdf,application/pdf">
+        <label for="templateFile" style="margin-top:10px">Brunswick Excelテンプレート</label>
+        <input id="templateFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
         <button id="runBtn" disabled>PDF表示</button>
         <div class="page-grid">
           <button id="prevPageBtn" disabled>前ページ</button>
@@ -499,6 +501,8 @@
       pageCanvas: null,
       structuredData: null,
       sheetJs: null,
+      templateBytes: null,
+      templateName: "",
       zoom: 1,
       activeBox: "metadata",
       boxes: {},
@@ -1338,6 +1342,15 @@
       return sheet;
     }
 
+    function replaceSheet(XLSX, workbook, name, sheet) {
+      const existing = workbook.SheetNames.indexOf(name);
+      if (existing >= 0) {
+        workbook.SheetNames.splice(existing, 1);
+        delete workbook.Sheets[name];
+      }
+      XLSX.utils.book_append_sheet(workbook, sheet, name);
+    }
+
     function rowsSheetAoa(rows) {
       return [
         ["direction", "start", "stop", "loads", "speed", "startFt", "endFt", "oil_uL"],
@@ -1399,16 +1412,19 @@
       if (!data) return;
       try {
         const XLSX = await loadSheetJs();
-        const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, summaryAoa(data)), "Summary");
-        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, rowsSheetAoa(data.forwardRows)), "Forward");
-        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, rowsSheetAoa(data.reverseRows)), "Reverse");
-        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, boardDistributionAoa(data)), "BoardDistribution");
-        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, brunswick39Aoa(data)), "Brunswick39");
-        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, [["json"], [JSON.stringify(data)]]), "IntermediateJSON");
-        const fileName = safeFileBase(data.sourceFile) + "_brunswick_prototype.xlsx";
+        const workbook = state.templateBytes
+          ? XLSX.read(state.templateBytes.slice(0), { type: "array", cellStyles: true, cellFormula: true, cellDates: true })
+          : XLSX.utils.book_new();
+        replaceSheet(XLSX, workbook, "KTBC Summary", sheetFromAoa(XLSX, summaryAoa(data)));
+        replaceSheet(XLSX, workbook, "KTBC Forward", sheetFromAoa(XLSX, rowsSheetAoa(data.forwardRows)));
+        replaceSheet(XLSX, workbook, "KTBC Reverse", sheetFromAoa(XLSX, rowsSheetAoa(data.reverseRows)));
+        replaceSheet(XLSX, workbook, "KTBC Boards", sheetFromAoa(XLSX, boardDistributionAoa(data)));
+        replaceSheet(XLSX, workbook, "KTBC Brunswick39", sheetFromAoa(XLSX, brunswick39Aoa(data)));
+        replaceSheet(XLSX, workbook, "KTBC JSON", sheetFromAoa(XLSX, [["json"], [JSON.stringify(data)]]));
+        const base = state.templateName ? safeFileBase(state.templateName) : safeFileBase(data.sourceFile);
+        const fileName = base + "_with_kegel_conversion.xlsx";
         XLSX.writeFile(workbook, fileName);
-        log("Excel出力: " + fileName);
+        log("Excel出力: " + fileName + (state.templateName ? " / テンプレート使用: " + state.templateName : ""));
       } catch (error) {
         log("Excel出力エラー: " + (error?.message || error));
         setProgress(100, "Excel出力に失敗しました。ログを確認してください。");
@@ -1581,6 +1597,26 @@
       if (file) {
         $("status").textContent = "選択済み: " + file.name;
         log("ファイル選択: " + file.name);
+      }
+    });
+
+    $("templateFile").addEventListener("change", async () => {
+      const file = $("templateFile").files[0];
+      state.templateBytes = null;
+      state.templateName = "";
+      if (!file) {
+        log("Brunswickテンプレートを解除しました。");
+        return;
+      }
+      try {
+        await loadSheetJs();
+        state.templateBytes = await file.arrayBuffer();
+        state.templateName = file.name;
+        log("Brunswickテンプレート選択: " + file.name);
+      } catch (error) {
+        log("テンプレート読み込みエラー: " + (error?.message || error));
+        state.templateBytes = null;
+        state.templateName = "";
       }
     });
 

@@ -333,6 +333,25 @@
       margin-top: 12px;
     }
 
+    .section-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .section-title-row h2 {
+      margin: 0;
+    }
+
+    .section-title-row button {
+      width: auto;
+      min-width: 150px;
+      margin: 0;
+      background: #155eef;
+    }
+
     .structured-grid textarea {
       min-height: 260px;
     }
@@ -458,7 +477,10 @@
         </div>
       </div>
       <div class="structured-grid">
-        <h2>構造化データ JSON</h2>
+        <div class="section-title-row">
+          <h2>構造化データ JSON</h2>
+          <button id="excelBtn" type="button" disabled>Excel出力</button>
+        </div>
         <textarea id="structuredText" spellcheck="false" readonly></textarea>
       </div>
     </section>
@@ -475,6 +497,8 @@
       fileName: "",
       pageNumber: 1,
       pageCanvas: null,
+      structuredData: null,
+      sheetJs: null,
       zoom: 1,
       activeBox: "metadata",
       boxes: {},
@@ -513,6 +537,7 @@
       $("zoomLabel").textContent = "100%";
       $("formattedText").value = "";
       $("structuredText").value = "";
+      $("excelBtn").disabled = true;
       $("rowsText").value = "";
       $("rawText").value = "";
       $("cropList").innerHTML = "";
@@ -524,6 +549,7 @@
       canvas.style.height = "";
       $("selectionLayer").innerHTML = "";
       state.pageCanvas = null;
+      state.structuredData = null;
       state.zoom = 1;
       state.boxes = {};
       setZoomControlsEnabled(false);
@@ -579,6 +605,21 @@
         }
       });
       return state.ocrWorker;
+    }
+
+    async function loadSheetJs() {
+      if (state.sheetJs) return state.sheetJs;
+      log("Excel出力エンジンを読み込んでいます。");
+      await new Promise((resolve, reject) => {
+        if (window.XLSX) return resolve();
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("SheetJSを読み込めませんでした。"));
+        document.head.appendChild(script);
+      });
+      state.sheetJs = window.XLSX;
+      return state.sheetJs;
     }
 
     function cluster(values, gap = 3) {
@@ -879,8 +920,10 @@
       $("cropList").innerHTML = "";
       $("formattedText").value = "";
       $("structuredText").value = "";
+      $("excelBtn").disabled = true;
       $("rowsText").value = "";
       $("rawText").value = "";
+      state.structuredData = null;
       $("prevPageBtn").disabled = state.pageNumber <= 1;
       $("nextPageBtn").disabled = state.pageNumber >= state.pdf.numPages;
       updateOcrButtonState();
@@ -1286,6 +1329,92 @@
       }));
     }
 
+    function sheetFromAoa(XLSX, rows) {
+      const sheet = XLSX.utils.aoa_to_sheet(rows);
+      const widthCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+      sheet["!cols"] = Array.from({ length: widthCount }, (_, index) => ({
+        wch: Math.max(10, Math.min(28, rows.reduce((max, row) => Math.max(max, String(row[index] ?? "").length), 0) + 2))
+      }));
+      return sheet;
+    }
+
+    function rowsSheetAoa(rows) {
+      return [
+        ["direction", "start", "stop", "loads", "speed", "startFt", "endFt", "oil_uL"],
+        ...rows.map(row => columns.map(key => key === "oil_uL" ? row.oil : row[key]))
+      ];
+    }
+
+    function summaryAoa(data) {
+      const metadata = data.metadata || {};
+      return [
+        ["項目", "値"],
+        ["sourceFile", data.sourceFile],
+        ["pageNumber", data.pageNumber],
+        ["patternDistanceFt", metadata.patternDistanceFt],
+        ["reverseBrushDropFt", metadata.reverseBrushDropFt],
+        ["oilPerBoardUl", metadata.oilPerBoardUl],
+        ["forwardOilMl", metadata.forwardOilMl],
+        ["reverseOilMl", metadata.reverseOilMl],
+        ["totalOilMl", metadata.totalOilMl],
+        ["ratio", metadata.ratio],
+        ["forwardRowCount", data.totals.forwardRowCount],
+        ["reverseRowCount", data.totals.reverseRowCount],
+        ["estimatedForwardOilUl", data.totals.forwardOilUl],
+        ["estimatedReverseOilUl", data.totals.reverseOilUl],
+        ["estimatedTotalOilUl", data.totals.totalOilUl]
+      ];
+    }
+
+    function boardDistributionAoa(data) {
+      return [
+        ["board", "estimatedOil_uL"],
+        ...data.boardDistribution.map(item => [item.board, item.oilUl])
+      ];
+    }
+
+    function brunswick39Aoa(data) {
+      const oilPerBoard = Number(data.metadata?.oilPerBoardUl) || 50;
+      return [
+        ["board", "injector", "estimatedOil_uL", "estimatedUnits", "note"],
+        ...data.boardDistribution.map(item => [
+          item.board,
+          item.board,
+          item.oilUl,
+          Math.round((item.oilUl / oilPerBoard) * 100) / 100,
+          "prototype conversion"
+        ])
+      ];
+    }
+
+    function safeFileBase(name) {
+      return String(name || "kegel_pattern")
+        .replace(/\.[^.]+$/, "")
+        .replace(/[\\/:*?"<>|]/g, "_")
+        .slice(0, 80) || "kegel_pattern";
+    }
+
+    async function exportExcel() {
+      const data = state.structuredData;
+      if (!data) return;
+      try {
+        const XLSX = await loadSheetJs();
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, summaryAoa(data)), "Summary");
+        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, rowsSheetAoa(data.forwardRows)), "Forward");
+        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, rowsSheetAoa(data.reverseRows)), "Reverse");
+        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, boardDistributionAoa(data)), "BoardDistribution");
+        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, brunswick39Aoa(data)), "Brunswick39");
+        XLSX.utils.book_append_sheet(workbook, sheetFromAoa(XLSX, [["json"], [JSON.stringify(data)]]), "IntermediateJSON");
+        const fileName = safeFileBase(data.sourceFile) + "_brunswick_prototype.xlsx";
+        XLSX.writeFile(workbook, fileName);
+        log("Excel出力: " + fileName);
+      } catch (error) {
+        log("Excel出力エラー: " + (error?.message || error));
+        setProgress(100, "Excel出力に失敗しました。ログを確認してください。");
+      }
+    }
+
     function formatSection(section) {
       const def = boxDefinitions[section.key];
       const lines = cleanLines(section.text);
@@ -1396,8 +1525,10 @@
           .filter(section => section.direction)
           .flatMap(section => parseRows(section.text, section.direction));
         const structured = buildStructuredData(sections);
+        state.structuredData = structured;
         $("formattedText").value = formatManualOutput(cropItems, sections);
         $("structuredText").value = JSON.stringify(structured, null, 2);
+        $("excelBtn").disabled = false;
         $("rawText").value = rawText;
         $("rowsText").value = rowsToCsv(rows);
         $("rowMetric").textContent = rows.length;
@@ -1509,6 +1640,7 @@
 
     $("runBtn").addEventListener("click", analyze);
     $("ocrBtn").addEventListener("click", runManualOcr);
+    $("excelBtn").addEventListener("click", exportExcel);
     $("zoomOutBtn").addEventListener("click", () => setZoom(state.zoom - 0.1));
     $("zoomInBtn").addEventListener("click", () => setZoom(state.zoom + 0.1));
     $("zoomRange").addEventListener("input", event => setZoom(Number(event.target.value) / 100));

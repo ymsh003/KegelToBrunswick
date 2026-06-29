@@ -916,19 +916,21 @@
     }
 
     function enhanceForOcr(source) {
-      const scale = 2;
+      const scale = 3;
+      const padding = 18;
       const canvas = document.createElement("canvas");
-      canvas.width = source.width * scale;
-      canvas.height = source.height * scale;
+      canvas.width = source.width * scale + padding * 2;
+      canvas.height = source.height * scale + padding * 2;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(source, padding, padding, source.width * scale, source.height * scale);
       const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
       for (let i = 0; i < img.data.length; i += 4) {
         const gray = img.data[i] * 0.299 + img.data[i + 1] * 0.587 + img.data[i + 2] * 0.114;
-        const v = gray < 190 ? 0 : 255;
+        const contrast = Math.max(0, Math.min(255, (gray - 128) * 1.35 + 128));
+        const v = contrast < 205 ? 0 : 255;
         img.data[i] = v;
         img.data[i + 1] = v;
         img.data[i + 2] = v;
@@ -954,26 +956,99 @@
         .trim();
     }
 
+    function normalizeNumericToken(token) {
+      const fixed = String(token || "")
+        .replace(/[OoQ©]/g, "0")
+        .replace(/[S$§]/g, "5")
+        .replace(/[Il!|]/g, "1")
+        .replace(/[Bb]/g, "8")
+        .replace(/[aA]/g, "8")
+        .replace(/[cC]/g, "0")
+        .replace(/%/g, "0")
+        .replace(/,/g, ".")
+        .replace(/[^\d.\-]/g, "");
+      if (!fixed || fixed === "-" || fixed === ".") return NaN;
+      return Number(fixed);
+    }
+
+    function normalizeFeetValue(value) {
+      if (!Number.isFinite(value)) return value;
+      const abs = Math.abs(value);
+      if (Number.isInteger(value) && abs >= 10 && abs <= 450) return Math.round(value) / 10;
+      return value;
+    }
+
+    function normalizeBoardToken(token, side) {
+      const raw = String(token || "").trim();
+      if (/^FOR$/i.test(raw)) return "10R";
+      if (/^[iIl!|]L$/.test(raw)) return "11L";
+      let value = raw
+        .replace(/[({\[]/g, "")
+        .replace(/[)}\]]/g, "")
+        .replace(/[OoQ©]/g, "0")
+        .replace(/[Il!|]/g, "L")
+        .replace(/[r]/g, "R")
+        .replace(/[pPmn]/g, "R")
+        .replace(/[Bb](?=R)/g, "8")
+        .replace(/^[aA]$/, "4")
+        .replace(/^F0R$/i, "10R")
+        .replace(/[^\dLR]/g, "");
+      if (/^0L$/.test(value)) value = "9L";
+      if (/^\d{1,2}$/.test(value)) value += side === "start" ? "L" : "R";
+      const match = value.match(/^(\d{1,2})([LR])$/);
+      if (!match) return "";
+      const board = Number(match[1]);
+      if (board < 1 || board > 39) return "";
+      return board + match[2];
+    }
+
+    function prepareRowTokens(line) {
+      let text = String(line || "")
+        .replace(/[»¢]/g, " ")
+        .replace(/([0-9])(-[0-9])/g, "$1 $2")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!text) return [];
+      let tokens = text.split(" ").filter(Boolean);
+      const rowMarker = tokens[0];
+      if (rowMarker === "§") tokens[0] = "5";
+      if (rowMarker === ":") tokens[0] = "8";
+      if (/^\d{3}$/.test(tokens[0]) && Number(tokens[0][0]) >= 1) {
+        tokens = [tokens[0][0], tokens[0][1] + "L", ...tokens.slice(1)];
+      }
+      return tokens;
+    }
+
     function parseRows(text, direction) {
-      const normalized = normalizeText(text);
       const rows = [];
-      const rowRe = /(?:^|\s)(\d{1,2})\s+(\d{1,2}[LR])\s+(\d{1,2}[LR])\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)(?:\s+(-?\d+(?:\.\d+)?))?(?:\s+[AB])?(?:\s+(-?\d+(?:\.\d+)?))?\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/gi;
-      for (const match of normalized.matchAll(rowRe)) {
-        const startFt = Number(match[8]);
-        const endFt = Number(match[9]);
-        const oil = Number(match[11]);
-        if (!Number.isFinite(startFt) || !Number.isFinite(endFt) || startFt < 0 || endFt < 0 || startFt > 45 || endFt > 45) continue;
+      String(text || "").split(/\r?\n/).forEach(line => {
+        const tokens = prepareRowTokens(line);
+        if (tokens.length < 9) return;
+        const rowNo = normalizeNumericToken(tokens[0]);
+        if (!Number.isFinite(rowNo) || rowNo < 1 || rowNo > 30) return;
+        const start = normalizeBoardToken(tokens[1], "start");
+        const stop = normalizeBoardToken(tokens[2], "stop");
+        if (!start || !stop) return;
+        const nums = tokens.slice(3).map(normalizeNumericToken).filter(Number.isFinite);
+        if (nums.length < 7) return;
+        const hasCrossed = nums.length >= 8;
+        const loads = nums[0];
+        const speed = nums[2];
+        const startFt = normalizeFeetValue(nums[hasCrossed ? 4 : 3]);
+        const endFt = normalizeFeetValue(nums[hasCrossed ? 5 : 4]);
+        const oil = nums[nums.length - 1];
+        if (!Number.isFinite(startFt) || !Number.isFinite(endFt) || startFt < 0 || endFt < 0 || startFt > 45 || endFt > 45) return;
         rows.push({
           direction,
-          start: match[2],
-          stop: match[3],
-          loads: Number(match[4]),
-          speed: Number(match[5]),
+          start,
+          stop,
+          loads,
+          speed,
           startFt,
           endFt,
           oil
         });
-      }
+      });
       return rows;
     }
 

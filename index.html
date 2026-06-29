@@ -158,11 +158,75 @@
       background: #fff;
     }
 
+    .canvas-stage {
+      position: relative;
+      display: inline-block;
+      line-height: 0;
+      min-width: 100%;
+    }
+
     canvas {
       display: block;
       max-width: 100%;
       height: auto;
     }
+
+    .selection-layer {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    .selection-layer rect {
+      fill-opacity: .12;
+      stroke-width: 4;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .selection-layer text {
+      font: 18px system-ui, sans-serif;
+      font-weight: 700;
+      paint-order: stroke;
+      stroke: #fff;
+      stroke-width: 4px;
+      stroke-linejoin: round;
+    }
+
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .tool-grid button,
+    .page-grid button {
+      margin: 0;
+      background: #eef2f6;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+
+    .tool-grid button.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .page-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    #ocrBtn {
+      background: #155eef;
+    }
+
 
     .crop-list {
       display: grid;
@@ -254,8 +318,25 @@
         <h2>ファイル選択</h2>
         <label for="pdfFile">Kegel PDF</label>
         <input id="pdfFile" type="file" accept=".pdf,application/pdf">
-        <button id="runBtn" disabled>解析開始</button>
-        <div class="hint">処理はローカルブラウザ内で行います。PDF.js と Tesseract.js の読み込みにはネットワークを使います。</div>
+        <button id="runBtn" disabled>PDF表示</button>
+        <div class="page-grid">
+          <button id="prevPageBtn" disabled>前ページ</button>
+          <button id="nextPageBtn" disabled>次ページ</button>
+        </div>
+        <div class="hint">PDFを表示したあと、下の種類を選んでページ上をドラッグし、切り出し範囲を指定します。</div>
+      </section>
+
+      <section style="margin-top:16px">
+        <h2>切り出し範囲</h2>
+        <div class="tool-grid" id="toolGrid">
+          <button data-box="metadata" class="active">メタデータ</button>
+          <button data-box="forward">Forward</button>
+          <button data-box="reverse">Reverse</button>
+          <button data-box="ratio">Ratio</button>
+          <button data-box="graph">Pattern Graph</button>
+        </div>
+        <button id="ocrBtn" disabled>指定範囲をOCR</button>
+        <div class="hint">同じ種類を選んで描き直すと、その範囲だけ更新されます。Graphは表示確認用で、行CSV解析には使いません。</div>
       </section>
 
       <section style="margin-top:16px">
@@ -281,7 +362,10 @@
       <div class="layout">
         <div>
           <div class="canvas-wrap">
-            <canvas id="pageCanvas"></canvas>
+            <div class="canvas-stage" id="canvasStage">
+              <canvas id="pageCanvas"></canvas>
+              <svg class="selection-layer" id="selectionLayer"></svg>
+            </div>
           </div>
         </div>
         <div class="crop-list" id="cropList"></div>
@@ -305,7 +389,22 @@
       startedAt: 0,
       timer: null,
       pdfjs: null,
-      ocrWorker: null
+      ocrWorker: null,
+      pdf: null,
+      fileName: "",
+      pageNumber: 1,
+      pageCanvas: null,
+      activeBox: "metadata",
+      boxes: {},
+      drag: null
+    };
+
+    const boxDefinitions = {
+      metadata: { label: "メタデータ", color: "#155eef" },
+      forward: { label: "Forward", color: "#0f766e" },
+      reverse: { label: "Reverse", color: "#b42318" },
+      ratio: { label: "Ratio", color: "#b54708" },
+      graph: { label: "Pattern Graph", color: "#7a5af8" }
     };
 
     const columns = [
@@ -334,6 +433,9 @@
       const canvas = $("pageCanvas");
       canvas.width = 1;
       canvas.height = 1;
+      $("selectionLayer").innerHTML = "";
+      state.pageCanvas = null;
+      state.boxes = {};
     }
 
     function setProgress(percent, status) {
@@ -565,6 +667,88 @@
       return canvas;
     }
 
+    function drawPageOnly(source) {
+      const target = $("pageCanvas");
+      target.width = source.width;
+      target.height = source.height;
+      const ctx = target.getContext("2d");
+      ctx.drawImage(source, 0, 0);
+      const layer = $("selectionLayer");
+      layer.setAttribute("viewBox", "0 0 " + source.width + " " + source.height);
+      layer.style.width = target.clientWidth + "px";
+      layer.style.height = target.clientHeight + "px";
+      renderSelectionLayer();
+    }
+
+    function renderSelectionLayer() {
+      const layer = $("selectionLayer");
+      layer.innerHTML = "";
+      Object.entries(state.boxes).forEach(([key, box]) => {
+        const def = boxDefinitions[key];
+        if (!def || box.w < 2 || box.h < 2) return;
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", box.x);
+        rect.setAttribute("y", box.y);
+        rect.setAttribute("width", box.w);
+        rect.setAttribute("height", box.h);
+        rect.setAttribute("fill", def.color);
+        rect.setAttribute("stroke", def.color);
+        layer.appendChild(rect);
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("x", box.x + 8);
+        text.setAttribute("y", Math.max(24, box.y + 24));
+        text.setAttribute("fill", def.color);
+        text.textContent = def.label;
+        layer.appendChild(text);
+      });
+    }
+
+    function pointFromEvent(event) {
+      const layer = $("selectionLayer");
+      const rect = layer.getBoundingClientRect();
+      const view = layer.viewBox.baseVal;
+      return {
+        x: Math.max(0, Math.min(view.width, (event.clientX - rect.left) * view.width / rect.width)),
+        y: Math.max(0, Math.min(view.height, (event.clientY - rect.top) * view.height / rect.height))
+      };
+    }
+
+    function normalizeBox(a, b) {
+      const x = Math.min(a.x, b.x);
+      const y = Math.min(a.y, b.y);
+      return {
+        x: Math.round(x),
+        y: Math.round(y),
+        w: Math.round(Math.abs(a.x - b.x)),
+        h: Math.round(Math.abs(a.y - b.y))
+      };
+    }
+
+    function updateOcrButtonState() {
+      const required = ["forward", "reverse"];
+      $("ocrBtn").disabled = !state.pageCanvas || !required.every(key => state.boxes[key] && state.boxes[key].w > 10 && state.boxes[key].h > 10);
+      $("candidateMetric").textContent = Object.keys(state.boxes).length;
+    }
+
+    async function renderCurrentPage() {
+      if (!state.pdf) return;
+      setProgress(20, "ページ " + state.pageNumber + "/" + state.pdf.numPages + " を表示しています。");
+      log("ページ表示: " + state.pageNumber + "/" + state.pdf.numPages);
+      state.pageCanvas = await renderPage(state.pdf, state.pageNumber, 2.4);
+      state.boxes = {};
+      drawPageOnly(state.pageCanvas);
+      $("pageMetric").textContent = state.pageNumber + "/" + state.pdf.numPages;
+      $("candidateMetric").textContent = "0";
+      $("rowMetric").textContent = "-";
+      $("cropList").innerHTML = "";
+      $("rowsText").value = "";
+      $("rawText").value = "";
+      $("prevPageBtn").disabled = state.pageNumber <= 1;
+      $("nextPageBtn").disabled = state.pageNumber >= state.pdf.numPages;
+      updateOcrButtonState();
+      setProgress(35, "範囲を手作業で指定してください。");
+    }
+
     function drawSelectedPage(source, candidates) {
       const target = $("pageCanvas");
       target.width = source.width;
@@ -593,6 +777,17 @@
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, crop.width, crop.height);
       ctx.drawImage(source, box.x * scaleX, box.y * scaleY, box.w * scaleX, box.h * scaleY, 0, 0, crop.width, crop.height);
+      return crop;
+    }
+
+    function cropPixelCanvas(source, box) {
+      const crop = document.createElement("canvas");
+      crop.width = Math.max(1, Math.round(box.w));
+      crop.height = Math.max(1, Math.round(box.h));
+      const ctx = crop.getContext("2d", { willReadFrequently: true });
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, crop.width, crop.height);
+      ctx.drawImage(source, box.x, box.y, box.w, box.h, 0, 0, crop.width, crop.height);
       return crop;
     }
 
@@ -676,75 +871,40 @@
       return { text: fullText.trim(), rows };
     }
 
-    async function analyze() {
-      const file = $("pdfFile").files[0];
-      if (!file) return;
-      resetView();
-      startTimer();
-      $("runBtn").disabled = true;
-      try {
-        log("解析開始: " + file.name);
-        setProgress(5, "PDFを読み込んでいます。");
-        const pdfjs = await loadPdfJs();
-        const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
-        log("PDFページ数: " + pdf.numPages);
-
-        setProgress(12, "PDF内テキストを確認しています。");
-        const pdfTextResult = await extractPdfTextRows(pdf);
-        if (pdfTextResult.rows.length) {
-          log("PDF内テキストから行を検出: " + pdfTextResult.rows.length + "行");
-          $("rawText").value = pdfTextResult.text;
-          $("rowsText").value = rowsToCsv(pdfTextResult.rows);
-          $("rowMetric").textContent = pdfTextResult.rows.length;
-          setProgress(100, "PDF内テキストから読み取りました。");
-          return;
-        }
-        log("PDF内テキストから表行は取れませんでした。画像解析へ進みます。");
-
-        let best = null;
-        for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-          setProgress(15 + Math.round(pageNumber / pdf.numPages * 35), "ページ " + pageNumber + "/" + pdf.numPages + " を画像化しています。");
-          const pageCanvas = await renderPage(pdf, pageNumber);
-          const detection = detectCandidates(pageCanvas);
-          const initialPair = choosePair(detection.candidates);
-          const pair = repairKegelTablePair(initialPair, detection.candidates, detection.analysisHeight);
-          const score = pair.reduce((sum, item) => sum + item.score, 0);
-          const repaired = initialPair[1] && pair[1] && pair[1].synthetic;
-          log("page " + pageNumber + ": 横罫線 " + detection.lineCount + "本 / 候補 " + detection.candidates.length + "件 / 採用候補 " + pair.length + "件 / score " + score + (repaired ? " / Ratio候補を除外してReverseを推定" : ""));
-          if (!best || score > best.score) best = { pageNumber, pageCanvas, detection, pair, score };
-        }
-
-        if (!best || !best.pair.length) {
-          setProgress(100, "切り出し候補が見つかりませんでした。");
-          log("切り出し失敗: 候補が0件です。");
-          return;
-        }
-
-        $("pageMetric").textContent = best.pageNumber + "/" + pdf.numPages;
-        $("candidateMetric").textContent = best.detection.candidates.length;
-        log("採用ページ: " + best.pageNumber + " / score " + best.score);
-        best.pair.forEach((box, index) => {
-          log((index === 0 ? "Forward候補" : "Reverse候補") + ": x=" + box.x + " y=" + box.y + " w=" + box.w + " h=" + box.h + " lines=" + (box.lines ?? "-") + " vLines=" + (box.vLines ?? "-") + " score=" + box.score + (box.synthetic ? " / 推定範囲" : ""));
-        });
-
-        drawSelectedPage(best.pageCanvas, best.pair);
-        $("cropList").innerHTML = "";
-        const cropItems = best.pair.map((box, index) => ({
-          direction: index === 0 ? "forward" : "reverse",
-          label: index === 0 ? "Forward candidate" : "Reverse candidate",
-          box,
-          canvas: cropCanvas(best.pageCanvas, box)
+    function buildManualCropItems() {
+      return Object.entries(boxDefinitions)
+        .filter(([key]) => state.boxes[key] && state.boxes[key].w > 10 && state.boxes[key].h > 10)
+        .map(([key, def]) => ({
+          key,
+          direction: key === "forward" || key === "reverse" ? key : "",
+          label: def.label,
+          box: state.boxes[key],
+          canvas: cropPixelCanvas(state.pageCanvas, state.boxes[key])
         }));
-        cropItems.forEach(item => {
-          const figure = document.createElement("figure");
-          const caption = document.createElement("figcaption");
-          caption.textContent = item.label + " / score " + item.box.score + " / " + item.box.w + "x" + item.box.h + (item.box.synthetic ? " / 推定範囲" : "");
-          figure.appendChild(caption);
-          figure.appendChild(item.canvas);
-          $("cropList").appendChild(figure);
-        });
+    }
 
-        setProgress(62, "OCRを実行しています。");
+    function renderCropPreviews(items) {
+      $("cropList").innerHTML = "";
+      items.forEach(item => {
+        const figure = document.createElement("figure");
+        const caption = document.createElement("figcaption");
+        caption.textContent = item.label + " / x:" + item.box.x + " y:" + item.box.y + " w:" + item.box.w + " h:" + item.box.h;
+        figure.appendChild(caption);
+        figure.appendChild(item.canvas);
+        $("cropList").appendChild(figure);
+      });
+    }
+
+    async function runManualOcr() {
+      if (!state.pageCanvas) return;
+      const cropItems = buildManualCropItems();
+      if (!cropItems.length) return;
+      startTimer();
+      $("ocrBtn").disabled = true;
+      try {
+        log("手動指定範囲 OCR開始: " + cropItems.map(item => item.key).join(", "));
+        renderCropPreviews(cropItems);
+        setProgress(55, "指定範囲をOCRしています。");
         const worker = await loadTesseractWorker();
         if (worker.setParameters) {
           await worker.setParameters({
@@ -757,22 +917,42 @@
           log(item.label + " OCR開始");
           const result = await worker.recognize(enhanceForOcr(item.canvas));
           const text = result?.data?.text || "";
-          sections.push({ direction: item.direction, text });
+          sections.push({ key: item.key, direction: item.direction, text });
           log(item.label + " OCR完了: " + text.length + "文字");
         }
-
-        const rawText = sections.map(section => "## " + section.direction + "\n" + section.text).join("\n\n");
-        const rows = sections.flatMap(section => parseRows(section.text, section.direction));
+        const rawText = sections.map(section => "## " + section.key + "\n" + section.text).join("\n\n");
+        const rows = sections
+          .filter(section => section.direction)
+          .flatMap(section => parseRows(section.text, section.direction));
         $("rawText").value = rawText;
         $("rowsText").value = rowsToCsv(rows);
         $("rowMetric").textContent = rows.length;
-        if (rows.length) {
-          log("行データ検出: " + rows.length + "行");
-          setProgress(100, "解析完了: " + rows.length + "行を検出しました。");
-        } else {
-          log("OCRは完了しましたが、行データとして解釈できませんでした。");
-          setProgress(100, "OCR結果を表示しました。行データは未確定です。");
-        }
+        log("行データ検出: " + rows.length + "行");
+        setProgress(100, rows.length ? "OCR完了: " + rows.length + "行を検出しました。" : "OCR完了: 行データは未確定です。");
+      } catch (error) {
+        log("エラー: " + (error?.message || error));
+        setProgress(100, "OCR中にエラーが発生しました。ログを確認してください。");
+      } finally {
+        stopTimer();
+        updateOcrButtonState();
+      }
+    }
+
+    async function analyze() {
+      const file = $("pdfFile").files[0];
+      if (!file) return;
+      resetView();
+      startTimer();
+      $("runBtn").disabled = true;
+      try {
+        log("PDF表示開始: " + file.name);
+        setProgress(5, "PDFを読み込んでいます。");
+        const pdfjs = await loadPdfJs();
+        state.pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+        state.fileName = file.name;
+        state.pageNumber = 1;
+        log("PDFページ数: " + state.pdf.numPages);
+        await renderCurrentPage();
       } catch (error) {
         log("エラー: " + (error?.message || error));
         setProgress(100, "エラーが発生しました。ログを確認してください。");
@@ -785,14 +965,77 @@
     $("pdfFile").addEventListener("change", () => {
       resetView();
       const file = $("pdfFile").files[0];
+      state.pdf = null;
+      state.pageNumber = 1;
       $("runBtn").disabled = !file;
+      $("prevPageBtn").disabled = true;
+      $("nextPageBtn").disabled = true;
+      $("ocrBtn").disabled = true;
       if (file) {
         $("status").textContent = "選択済み: " + file.name;
         log("ファイル選択: " + file.name);
       }
     });
 
+    $("toolGrid").addEventListener("click", event => {
+      const button = event.target.closest("button[data-box]");
+      if (!button) return;
+      state.activeBox = button.dataset.box;
+      document.querySelectorAll("#toolGrid button").forEach(item => item.classList.toggle("active", item === button));
+      log("切り出し範囲の種類: " + boxDefinitions[state.activeBox].label);
+    });
+
+    $("selectionLayer").addEventListener("pointerdown", event => {
+      if (!state.pageCanvas) return;
+      $("selectionLayer").setPointerCapture(event.pointerId);
+      const point = pointFromEvent(event);
+      state.drag = { start: point, current: point };
+      state.boxes[state.activeBox] = { x: Math.round(point.x), y: Math.round(point.y), w: 1, h: 1 };
+      renderSelectionLayer();
+    });
+
+    $("selectionLayer").addEventListener("pointermove", event => {
+      if (!state.drag) return;
+      state.drag.current = pointFromEvent(event);
+      state.boxes[state.activeBox] = normalizeBox(state.drag.start, state.drag.current);
+      renderSelectionLayer();
+    });
+
+    $("selectionLayer").addEventListener("pointerup", event => {
+      if (!state.drag) return;
+      state.drag.current = pointFromEvent(event);
+      const box = normalizeBox(state.drag.start, state.drag.current);
+      state.drag = null;
+      if (box.w < 8 || box.h < 8) {
+        delete state.boxes[state.activeBox];
+        renderSelectionLayer();
+        updateOcrButtonState();
+        return;
+      }
+      state.boxes[state.activeBox] = box;
+      log(boxDefinitions[state.activeBox].label + " 範囲: x=" + box.x + " y=" + box.y + " w=" + box.w + " h=" + box.h);
+      renderSelectionLayer();
+      renderCropPreviews(buildManualCropItems());
+      updateOcrButtonState();
+    });
+
+    $("prevPageBtn").addEventListener("click", async () => {
+      if (!state.pdf || state.pageNumber <= 1) return;
+      state.pageNumber--;
+      await renderCurrentPage();
+    });
+
+    $("nextPageBtn").addEventListener("click", async () => {
+      if (!state.pdf || state.pageNumber >= state.pdf.numPages) return;
+      state.pageNumber++;
+      await renderCurrentPage();
+    });
+
     $("runBtn").addEventListener("click", analyze);
+    $("ocrBtn").addEventListener("click", runManualOcr);
+    window.addEventListener("resize", () => {
+      if (state.pageCanvas) drawPageOnly(state.pageCanvas);
+    });
     resetView();
   </script>
 </body>

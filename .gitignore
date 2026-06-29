@@ -1,5 +1,6 @@
 *.pdf
 *.xlsx
+!brunswick-template.xlsx
 *.xlsm
 *.xls
 *.zip

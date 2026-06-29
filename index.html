@@ -402,11 +402,7 @@
         <h2>ファイル選択</h2>
         <label for="pdfFile">Kegel PDF</label>
         <input id="pdfFile" type="file" accept=".pdf,application/pdf">
-        <label for="templateFile" style="margin-top:10px">Brunswick Excelテンプレート</label>
-        <input id="templateFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
-        <label for="referenceFile" style="margin-top:10px">正解Brunswick Excel</label>
-        <input id="referenceFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
-        <button id="runBtn" disabled>PDF表示</button>
+        <button id="runBtn" style="display:none" disabled>PDF表示</button>
         <div class="page-grid">
           <button id="prevPageBtn" disabled>前ページ</button>
           <button id="nextPageBtn" disabled>次ページ</button>
@@ -427,13 +423,14 @@
       </section>
 
       <section style="margin-top:16px">
-        <h2>動作ログ</h2>
-        <pre class="log" id="log"></pre>
+        <h2>出力</h2>
+        <div class="hint">処理ログと変換結果はファイルとして保存します。</div>
+        <pre class="log" id="log" style="display:none"></pre>
       </section>
     </aside>
 
     <section>
-      <h2>結果表示</h2>
+      <h2>範囲指定</h2>
       <div class="canvas-toolbar">
         <div class="canvas-controls">
           <div class="tool-grid" id="toolGrid">
@@ -453,7 +450,7 @@
             <button id="actualSizeBtn" class="wide" type="button" disabled>原寸</button>
           </div>
         </div>
-        <button id="ocrBtn" disabled>指定範囲をOCR</button>
+        <button id="ocrBtn" disabled>変換して出力</button>
       </div>
       <div class="layout">
         <div>
@@ -466,7 +463,7 @@
         </div>
         <div class="crop-list" id="cropList"></div>
       </div>
-      <div class="result-grid">
+      <div class="result-grid" style="display:none">
         <div>
           <h2>整形済み読み取り</h2>
           <textarea id="formattedText" spellcheck="false" readonly></textarea>
@@ -480,14 +477,14 @@
           <textarea id="rawText" spellcheck="false" readonly></textarea>
         </div>
       </div>
-      <div class="structured-grid">
+      <div class="structured-grid" style="display:none">
         <div class="section-title-row">
           <h2>構造化データ JSON</h2>
           <button id="excelBtn" type="button" disabled>Excel出力</button>
         </div>
         <textarea id="structuredText" spellcheck="false" readonly></textarea>
       </div>
-      <div class="structured-grid">
+      <div class="structured-grid" style="display:none">
         <h2>正解Excelとの差分</h2>
         <textarea id="comparisonText" spellcheck="false" readonly></textarea>
       </div>
@@ -507,11 +504,12 @@
       pageCanvas: null,
       structuredData: null,
       sheetJs: null,
-      templateBytes: null,
-      templateName: "",
+      fixedTemplateBytes: null,
       referenceBytes: null,
       referenceName: "",
       referenceGrid: null,
+      logs: [],
+      outputDirectoryHandle: null,
       zoom: 1,
       activeBox: "metadata",
       boxes: {},
@@ -536,7 +534,9 @@
     }
 
     function log(message) {
-      $("log").textContent += "[" + nowText() + "] " + message + "\n";
+      const line = "[" + nowText() + "] " + message;
+      state.logs.push(line);
+      $("log").textContent += line + "\n";
       $("log").scrollTop = $("log").scrollHeight;
     }
 
@@ -556,6 +556,7 @@
       $("rawText").value = "";
       $("cropList").innerHTML = "";
       $("log").textContent = "";
+      state.logs = [];
       const canvas = $("pageCanvas");
       canvas.width = 1;
       canvas.height = 1;
@@ -634,6 +635,15 @@
       });
       state.sheetJs = window.XLSX;
       return state.sheetJs;
+    }
+
+    async function loadFixedBrunswickTemplate() {
+      if (state.fixedTemplateBytes) return state.fixedTemplateBytes.slice(0);
+      log("同梱Brunswickテンプレートを読み込んでいます。");
+      const response = await fetch("brunswick-template.xlsx");
+      if (!response.ok) throw new Error("同梱Brunswickテンプレートを読み込めませんでした。");
+      state.fixedTemplateBytes = await response.arrayBuffer();
+      return state.fixedTemplateBytes.slice(0);
     }
 
     function cluster(values, gap = 3) {
@@ -1718,33 +1728,78 @@
         .slice(0, 80) || "kegel_pattern";
     }
 
-    async function exportExcel() {
+    function buildLogText(data, rawText, rows) {
+      return [
+        "Kegel To Brunswick Conversion LOG",
+        "sourceFile: " + (data?.sourceFile || ""),
+        "generatedAt: " + new Date().toISOString(),
+        "",
+        "== Process Log ==",
+        ...state.logs,
+        "",
+        "== Summary ==",
+        JSON.stringify({
+          metadata: data?.metadata,
+          totals: data?.totals,
+          ratioValues: data?.ratioValues,
+          rowCount: rows?.length || 0
+        }, null, 2),
+        "",
+        "== Rows CSV ==",
+        rowsToCsv(rows || []),
+        "",
+        "== Structured JSON ==",
+        JSON.stringify(data || {}, null, 2),
+        "",
+        "== OCR Raw Text ==",
+        rawText || ""
+      ].join("\n");
+    }
+
+    async function saveFileWithPicker(fileName, blob) {
+      if (window.showDirectoryPicker) {
+        if (!state.outputDirectoryHandle) {
+          setProgress(92, "保存先フォルダを選択してください。PDFと同じフォルダを選んでください。");
+          state.outputDirectoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+        }
+        const handle = await state.outputDirectoryHandle.getFileHandle(fileName, { create: true });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return "folder";
+      }
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 30000);
+      return "download";
+    }
+
+    async function exportArtifacts(rawText = "", rows = []) {
       const data = state.structuredData;
       if (!data) return;
       try {
         const XLSX = await loadSheetJs();
-        const workbook = state.templateBytes
-          ? XLSX.read(state.templateBytes.slice(0), { type: "array", cellStyles: true, cellFormula: true, cellDates: true })
-          : XLSX.utils.book_new();
-        replaceSheet(XLSX, workbook, "KTBC Summary", sheetFromAoa(XLSX, summaryAoa(data)));
-        replaceSheet(XLSX, workbook, "KTBC Forward", sheetFromAoa(XLSX, rowsSheetAoa(data.forwardRows)));
-        replaceSheet(XLSX, workbook, "KTBC Reverse", sheetFromAoa(XLSX, rowsSheetAoa(data.reverseRows)));
-        replaceSheet(XLSX, workbook, "KTBC Boards", sheetFromAoa(XLSX, boardDistributionAoa(data)));
-        replaceSheet(XLSX, workbook, "KTBC ZoneMatrix", sheetFromAoa(XLSX, zoneMatrixAoa(data)));
-        replaceSheet(XLSX, workbook, "KTBC RawOilMatrix", sheetFromAoa(XLSX, zoneMatrixRawAoa(data)));
-        replaceSheet(XLSX, workbook, "KTBC RatioDetail", sheetFromAoa(XLSX, ratioDetailAoa(data)));
-        const comparison = compareZoneMatrix(data, state.referenceGrid);
-        if (comparison) replaceSheet(XLSX, workbook, "KTBC Comparison", sheetFromAoa(XLSX, comparisonAoa(comparison)));
-        replaceSheet(XLSX, workbook, "KTBC Brunswick39", sheetFromAoa(XLSX, brunswick39Aoa(data)));
-        replaceSheet(XLSX, workbook, "KTBC JSON", sheetFromAoa(XLSX, [["json"], [JSON.stringify(data)]]));
+        const templateBytes = await loadFixedBrunswickTemplate();
+        const workbook = XLSX.read(templateBytes, { type: "array", cellStyles: true, cellFormula: true, cellDates: true });
         const wrotePatternDesign = applyPatternDesignSheet(XLSX, workbook, data);
-        const base = state.templateName ? safeFileBase(state.templateName) : safeFileBase(data.sourceFile);
-        const fileName = base + "_with_kegel_conversion.xlsx";
-        XLSX.writeFile(workbook, fileName);
-        log("Excel出力: " + fileName + (state.templateName ? " / テンプレート使用: " + state.templateName : "") + (wrotePatternDesign ? " / Pattern Designへ反映" : ""));
+        if (!wrotePatternDesign) throw new Error("Pattern Designシートへ書き込めませんでした。");
+        const base = safeFileBase(data.sourceFile);
+        const exportName = base + "_EXPORT.xlsx";
+        const logName = base + "_LOG.txt";
+        const excelArray = XLSX.write(workbook, { type: "array", bookType: "xlsx", cellStyles: true });
+        const logText = buildLogText(data, rawText, rows);
+        const mode1 = await saveFileWithPicker(exportName, new Blob([excelArray], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+        const mode2 = await saveFileWithPicker(logName, new Blob([logText], { type: "text/plain;charset=utf-8" }));
+        log("ファイル出力: " + exportName + " / " + logName + " / " + (mode1 === "folder" && mode2 === "folder" ? "フォルダ保存" : "ダウンロード保存"));
+        setProgress(100, "出力完了: EXPORTとLOGを保存しました。");
       } catch (error) {
         log("Excel出力エラー: " + (error?.message || error));
         setProgress(100, "Excel出力に失敗しました。ログを確認してください。");
+        throw error;
       }
     }
 
@@ -1862,16 +1917,16 @@
         $("formattedText").value = formatManualOutput(cropItems, sections);
         $("structuredText").value = JSON.stringify(structured, null, 2);
         updateComparisonView();
-        $("excelBtn").disabled = false;
         $("rawText").value = rawText;
         $("rowsText").value = rowsToCsv(rows);
         $("rowMetric").textContent = rows.length;
         log("行データ検出: " + rows.length + "行");
         log("構造化データ: Forward " + structured.totals.forwardRowCount + "行 / Reverse " + structured.totals.reverseRowCount + "行 / 合計 " + structured.totals.totalOilUl + "uL");
-        setProgress(100, rows.length ? "OCR完了: " + rows.length + "行を検出しました。" : "OCR完了: 行データは未確定です。");
+        setProgress(85, rows.length ? "OCR完了: " + rows.length + "行を検出しました。出力しています。" : "OCR完了: 行データは未確定です。出力しています。");
+        await exportArtifacts(rawText, rows);
       } catch (error) {
         log("エラー: " + (error?.message || error));
-        setProgress(100, "OCR中にエラーが発生しました。ログを確認してください。");
+        setProgress(100, "処理中にエラーが発生しました。");
       } finally {
         stopTimer();
         updateOcrButtonState();
@@ -1902,11 +1957,12 @@
       }
     }
 
-    $("pdfFile").addEventListener("change", () => {
+    $("pdfFile").addEventListener("change", async () => {
       resetView();
       const file = $("pdfFile").files[0];
       state.pdf = null;
       state.pageNumber = 1;
+      state.outputDirectoryHandle = null;
       $("runBtn").disabled = !file;
       $("prevPageBtn").disabled = true;
       $("nextPageBtn").disabled = true;
@@ -1915,54 +1971,7 @@
       if (file) {
         $("status").textContent = "選択済み: " + file.name;
         log("ファイル選択: " + file.name);
-      }
-    });
-
-    $("templateFile").addEventListener("change", async () => {
-      const file = $("templateFile").files[0];
-      state.templateBytes = null;
-      state.templateName = "";
-      if (!file) {
-        log("Brunswickテンプレートを解除しました。");
-        return;
-      }
-      try {
-        await loadSheetJs();
-        state.templateBytes = await file.arrayBuffer();
-        state.templateName = file.name;
-        log("Brunswickテンプレート選択: " + file.name);
-      } catch (error) {
-        log("テンプレート読み込みエラー: " + (error?.message || error));
-        state.templateBytes = null;
-        state.templateName = "";
-      }
-    });
-
-    $("referenceFile").addEventListener("change", async () => {
-      const file = $("referenceFile").files[0];
-      state.referenceBytes = null;
-      state.referenceName = "";
-      state.referenceGrid = null;
-      if (!file) {
-        log("正解Excelを解除しました。");
-        updateComparisonView();
-        return;
-      }
-      try {
-        const XLSX = await loadSheetJs();
-        state.referenceBytes = await file.arrayBuffer();
-        state.referenceName = file.name;
-        const workbook = XLSX.read(state.referenceBytes.slice(0), { type: "array", cellFormula: true });
-        state.referenceGrid = extractPatternDesignGrid(XLSX, workbook);
-        if (!state.referenceGrid) throw new Error("Pattern Designシートを読み取れませんでした。");
-        log("正解Excel選択: " + file.name);
-        updateComparisonView();
-      } catch (error) {
-        log("正解Excel読み込みエラー: " + (error?.message || error));
-        state.referenceBytes = null;
-        state.referenceName = "";
-        state.referenceGrid = null;
-        updateComparisonView();
+        await analyze();
       }
     });
 
@@ -2022,7 +2031,6 @@
 
     $("runBtn").addEventListener("click", analyze);
     $("ocrBtn").addEventListener("click", runManualOcr);
-    $("excelBtn").addEventListener("click", exportExcel);
     $("zoomOutBtn").addEventListener("click", () => setZoom(state.zoom - 0.1));
     $("zoomInBtn").addEventListener("click", () => setZoom(state.zoom + 0.1));
     $("zoomRange").addEventListener("input", event => setZoom(Number(event.target.value) / 100));

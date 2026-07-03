@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ja">
 <head>
   <meta charset="utf-8">
@@ -122,6 +122,18 @@
       line-height: 1.2;
     }
 
+    .metric.wide {
+      grid-column: span 2;
+    }
+
+    .metric small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+    }
+
     .progress {
       height: 8px;
       border-radius: 999px;
@@ -151,8 +163,8 @@
 
     .canvas-wrap {
       position: relative;
-      max-height: calc(100vh - 210px);
-      min-height: 680px;
+      height: calc(100vh - 190px);
+      min-height: 560px;
       overflow: auto;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -193,6 +205,18 @@
       stroke: #fff;
       stroke-width: 4px;
       stroke-linejoin: round;
+    }
+
+    .selection-layer .active-box {
+      stroke-width: 6;
+      fill-opacity: .10;
+    }
+
+    .selection-layer .handle {
+      fill: #ffffff;
+      stroke-width: 5;
+      vector-effect: non-scaling-stroke;
+      filter: drop-shadow(0 1px 2px rgba(16, 24, 40, .22));
     }
 
     .tool-grid {
@@ -389,6 +413,87 @@
       .zoom-tools .wide { grid-column: span 2; }
       #ocrBtn { width: 100%; }
     }
+  
+
+    /* Tall PDF workflow: keep drawing tools beside the page, not above it. */
+    main > section {
+      display: grid;
+      grid-template-columns: 268px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    main > section > h2 {
+      grid-column: 1 / -1;
+      margin-bottom: 0;
+    }
+
+    main > section > .layout {
+      grid-column: 2;
+      grid-row: 2;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    main > section > .canvas-toolbar {
+      grid-column: 1;
+      grid-row: 2;
+      position: sticky;
+      top: 8px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    main > section > .canvas-toolbar .tool-grid {
+      grid-template-columns: 1fr;
+    }
+
+    main > section > .canvas-toolbar .zoom-tools {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    main > section > .canvas-toolbar .zoom-tools input,
+    main > section > .canvas-toolbar .zoom-tools strong,
+    main > section > .canvas-toolbar .zoom-tools .wide {
+      grid-column: 1 / -1;
+    }
+
+    main > section > .canvas-toolbar #ocrBtn {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .canvas-wrap {
+      height: calc(100vh - 118px);
+      min-height: 640px;
+    }
+
+    .crop-list {
+      max-height: 240px;
+      overflow: auto;
+    }
+
+    @media (max-width: 1180px) {
+      main > section { grid-template-columns: 220px minmax(0, 1fr); }
+      main > section > .canvas-toolbar { padding: 8px; }
+      main > section > .canvas-toolbar .tool-grid { grid-template-columns: 1fr; }
+      main > section > .canvas-toolbar .zoom-tools { grid-template-columns: 1fr; }
+      main > section > .canvas-toolbar .zoom-tools button { min-width: 0; }
+    }
+
+    @media (max-width: 720px) {
+      main { padding: 8px; }
+      main > section { grid-template-columns: 196px minmax(0, 1fr); gap: 8px; }
+      main > section > .canvas-toolbar { font-size: 12px; }
+      main > section > .canvas-toolbar button { padding: 8px 6px; }
+    }
+
   </style>
 </head>
 <body>
@@ -419,6 +524,7 @@
           <div class="metric"><span>ページ</span><strong id="pageMetric">-</strong></div>
           <div class="metric"><span>候補</span><strong id="candidateMetric">-</strong></div>
           <div class="metric"><span>行数</span><strong id="rowMetric">-</strong></div>
+          <div class="metric wide"><span>検証</span><strong id="qualityMetric">-</strong><small id="qualityDetail">Oil / Ratio</small></div>
         </div>
       </section>
 
@@ -444,9 +550,9 @@
           <div class="zoom-tools">
             <button id="zoomOutBtn" type="button" disabled>縮小</button>
             <button id="zoomInBtn" type="button" disabled>拡大</button>
-            <input id="zoomRange" type="range" min="50" max="220" step="10" value="100" disabled>
+            <input id="zoomRange" type="range" min="20" max="220" step="5" value="100" disabled>
             <strong id="zoomLabel">100%</strong>
-            <button id="fitWidthBtn" class="wide" type="button" disabled>幅に合わせる</button>
+            <button id="fitWidthBtn" class="wide" type="button" disabled>全体表示</button>
             <button id="actualSizeBtn" class="wide" type="button" disabled>原寸</button>
           </div>
         </div>
@@ -547,6 +653,8 @@
       $("pageMetric").textContent = "-";
       $("candidateMetric").textContent = "-";
       $("rowMetric").textContent = "-";
+      $("qualityMetric").textContent = "-";
+      $("qualityDetail").textContent = "Oil / Ratio";
       $("zoomRange").value = "100";
       $("zoomLabel").textContent = "100%";
       $("formattedText").value = "";
@@ -574,6 +682,28 @@
     function setProgress(percent, status) {
       $("progressFill").style.width = Math.max(0, Math.min(100, percent)) + "%";
       if (status) $("status").textContent = status;
+    }
+
+    function updateQualityMetric(data) {
+      const metadata = data?.metadata || {};
+      const matrix = data?.zoneMatrix || [];
+      const firstZone = matrix[0] || {};
+      const actualOil = Number(firstZone.calculatedOilTotalMl);
+      const targetOil = Number(metadata.totalOilMl);
+      const actualRatios = firstZone.calculatedRatios || [];
+      const targetRatios = data?.ratioValues || [];
+      const oilOk = Number.isFinite(actualOil) && Number.isFinite(targetOil) && targetOil > 0;
+      const ratioErrors = targetRatios.slice(0, 6)
+        .map((target, index) => Math.abs(Number(actualRatios[index]) - Number(target)))
+        .filter(value => Number.isFinite(value));
+      const maxRatioError = ratioErrors.length ? Math.max(...ratioErrors) : null;
+      const oilDiff = oilOk ? Math.abs(actualOil - targetOil) : null;
+      const score = oilOk && Number.isFinite(maxRatioError) ? Math.max(0, 100 - oilDiff * 12 - maxRatioError * 18) : null;
+      $("qualityMetric").textContent = Number.isFinite(score) ? Math.round(score) + "%" : "確認中";
+      $("qualityDetail").textContent = [
+        oilOk ? "Oil " + actualOil.toFixed(2) + "/" + targetOil.toFixed(2) + "mL" : "Oil -",
+        Number.isFinite(maxRatioError) ? "Ratio差 max " + maxRatioError.toFixed(2) : "Ratio -"
+      ].join(" / ");
     }
 
     function startTimer() {
@@ -846,7 +976,7 @@
       const oldHeight = $("pageCanvas").clientHeight || 1;
       const centerX = (wrap.scrollLeft + wrap.clientWidth / 2) / oldWidth;
       const centerY = (wrap.scrollTop + wrap.clientHeight / 2) / oldHeight;
-      state.zoom = Math.max(0.5, Math.min(2.2, value));
+      state.zoom = Math.max(0.2, Math.min(2.2, value));
       applyZoom();
       if (keepCenter && state.pageCanvas) {
         const newWidth = $("pageCanvas").clientWidth || 1;
@@ -873,6 +1003,17 @@
     function fitPageWidth() {
       if (!state.pageCanvas) return;
       const wrap = $("canvasWrap");
+      const availableWidth = Math.max(240, wrap.clientWidth - 28);
+      const availableHeight = Math.max(240, wrap.clientHeight - 28);
+      const scale = Math.min(availableWidth / state.pageCanvas.width, availableHeight / state.pageCanvas.height);
+      setZoom(scale, false);
+      wrap.scrollLeft = 0;
+      wrap.scrollTop = 0;
+    }
+
+    function fitPageWidthOnly() {
+      if (!state.pageCanvas) return;
+      const wrap = $("canvasWrap");
       const available = Math.max(320, wrap.clientWidth - 24);
       setZoom(available / state.pageCanvas.width, false);
       wrap.scrollLeft = 0;
@@ -897,6 +1038,7 @@
         rect.setAttribute("height", box.h);
         rect.setAttribute("fill", def.color);
         rect.setAttribute("stroke", def.color);
+        if (key === state.activeBox) rect.classList.add("active-box");
         layer.appendChild(rect);
         const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
         text.setAttribute("x", box.x + 8);
@@ -904,6 +1046,24 @@
         text.setAttribute("fill", def.color);
         text.textContent = def.label;
         layer.appendChild(text);
+        if (key === state.activeBox) {
+          const size = selectionHandleSize();
+          const points = [
+            [box.x, box.y, "nw"], [box.x + box.w / 2, box.y, "n"], [box.x + box.w, box.y, "ne"],
+            [box.x, box.y + box.h / 2, "w"], [box.x + box.w, box.y + box.h / 2, "e"],
+            [box.x, box.y + box.h, "sw"], [box.x + box.w / 2, box.y + box.h, "s"], [box.x + box.w, box.y + box.h, "se"]
+          ];
+          points.forEach(([cx, cy, handle]) => {
+            const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            circle.setAttribute("cx", cx);
+            circle.setAttribute("cy", cy);
+            circle.setAttribute("r", size);
+            circle.setAttribute("stroke", def.color);
+            circle.setAttribute("data-handle", handle);
+            circle.classList.add("handle");
+            layer.appendChild(circle);
+          });
+        }
       });
     }
 
@@ -928,6 +1088,64 @@
       };
     }
 
+
+    function selectionHandleSize() {
+      return Math.max(7, Math.min(18, 12 / Math.max(0.5, state.zoom || 1)));
+    }
+
+    function clampBoxToPage(box) {
+      const view = $("selectionLayer").viewBox.baseVal;
+      const x = Math.max(0, Math.min(view.width, box.x));
+      const y = Math.max(0, Math.min(view.height, box.y));
+      const w = Math.max(1, Math.min(view.width - x, box.w));
+      const h = Math.max(1, Math.min(view.height - y, box.h));
+      return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+    }
+
+    function hitTestSelection(point) {
+      const box = state.boxes[state.activeBox];
+      if (!box || box.w < 8 || box.h < 8) return { mode: "create" };
+      const margin = Math.max(8, 16 / Math.max(0.5, state.zoom || 1));
+      const nearLeft = Math.abs(point.x - box.x) <= margin;
+      const nearRight = Math.abs(point.x - (box.x + box.w)) <= margin;
+      const nearTop = Math.abs(point.y - box.y) <= margin;
+      const nearBottom = Math.abs(point.y - (box.y + box.h)) <= margin;
+      const insideX = point.x >= box.x - margin && point.x <= box.x + box.w + margin;
+      const insideY = point.y >= box.y - margin && point.y <= box.y + box.h + margin;
+      if (!insideX || !insideY) return { mode: "create" };
+      let handle = "";
+      if (nearTop) handle += "n";
+      else if (nearBottom) handle += "s";
+      if (nearLeft) handle += "w";
+      else if (nearRight) handle += "e";
+      if (handle) return { mode: "resize", handle, box: { ...box } };
+      if (point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h) {
+        return { mode: "move", box: { ...box } };
+      }
+      return { mode: "create" };
+    }
+
+    function resizeBoxFromDrag(original, handle, start, current) {
+      let left = original.x;
+      let right = original.x + original.w;
+      let top = original.y;
+      let bottom = original.y + original.h;
+      if (handle.includes("w")) left += current.x - start.x;
+      if (handle.includes("e")) right += current.x - start.x;
+      if (handle.includes("n")) top += current.y - start.y;
+      if (handle.includes("s")) bottom += current.y - start.y;
+      return clampBoxToPage({ x: Math.min(left, right), y: Math.min(top, bottom), w: Math.abs(right - left), h: Math.abs(bottom - top) });
+    }
+
+    function moveBoxFromDrag(original, start, current) {
+      return clampBoxToPage({
+        x: original.x + current.x - start.x,
+        y: original.y + current.y - start.y,
+        w: original.w,
+        h: original.h
+      });
+    }
+
     function updateOcrButtonState() {
       const required = ["forward", "reverse"];
       $("ocrBtn").disabled = !state.pageCanvas || !required.every(key => state.boxes[key] && state.boxes[key].w > 10 && state.boxes[key].h > 10);
@@ -940,9 +1158,10 @@
       log("ページ表示: " + state.pageNumber + "/" + state.pdf.numPages);
       state.pageCanvas = await renderPage(state.pdf, state.pageNumber, 2.4);
       state.boxes = {};
-      state.zoom = 0.9;
+      state.zoom = 1;
       drawPageOnly(state.pageCanvas);
       setZoomControlsEnabled(true);
+      requestAnimationFrame(fitPageWidth);
       $("pageMetric").textContent = state.pageNumber + "/" + state.pdf.numPages;
       $("candidateMetric").textContent = "0";
       $("rowMetric").textContent = "-";
@@ -1081,31 +1300,41 @@
       return Math.round(normalized * 10) / 10;
     }
 
-    function normalizeRatioValue(token) {
-      const value = normalizeNumericToken(token);
+    function normalizeFeetToken(token) {
+      const raw = String(token || "");
+      const value = normalizeNumericToken(raw);
       if (!Number.isFinite(value)) return NaN;
-      const normalized = value >= 10 && Number.isInteger(value) ? value / 100 : value;
-      return Math.round(normalized * 10) / 10;
+      if (/[.,]/.test(raw)) return Math.round(value * 10) / 10;
+      return normalizeFeetValue(value);
     }
 
-    function normalizeOilValue(token) {
-      let fixed = String(token || "")
-        .replace(/[OoQ©]/g, "0")
-        .replace(/[S$§]/g, "5")
-        .replace(/[Il!|]/g, "1")
-        .replace(/[Zz]/g, "2")
-        .replace(/[Bb]/g, "8")
-        .replace(/[cC]/g, "0")
-        .replace(/[Nn]/g, "1")
-        .replace(/[Gg]/g, "8")
-        .replace(/[£€]/g, "3")
-        .replace(/[aA]/g, "4")
-        .replace(/[^\d]/g, "");
-      if (fixed.length === 3 && Number(fixed) < 1000) fixed += "0";
-      if (fixed.length > 4) fixed = fixed.slice(0, 4);
-      const oil = Number(fixed);
-      return Number.isFinite(oil) ? oil : NaN;
-    }
+function normalizeRatioValue(token) {
+  const raw = String(token || "").replace(/[^\d.]/g, "");
+  if (!raw) return NaN;
+  let value = Number(raw);
+  if (!Number.isFinite(value)) return NaN;
+  if (!raw.includes(".") && value >= 100) value = value / 100;
+  else if (!raw.includes(".") && value >= 10) value = value / 10;
+  return Math.round(value * 100) / 100;
+}
+
+function normalizeOilValue(token) {
+  let fixed = String(token || "")
+    .replace(/[OoQ©]/g, "0")
+    .replace(/[S$§]/g, "5")
+    .replace(/[Il!|]/g, "1")
+    .replace(/[Zz]/g, "2")
+    .replace(/[Bb]/g, "8")
+    .replace(/[cC]/g, "0")
+    .replace(/[Nn]/g, "1")
+    .replace(/[Gg]/g, "8")
+    .replace(/[£€]/g, "3")
+    .replace(/[aA]/g, "4")
+    .replace(/[^\d]/g, "");
+  if (fixed.length > 4) fixed = fixed.slice(0, 4);
+  const oil = Number(fixed);
+  return Number.isFinite(oil) ? oil : NaN;
+}
 
     function normalizeBoardToken(token, side) {
       const raw = String(token || "").trim();
@@ -1198,13 +1427,16 @@
         const start = normalizeBoardToken(tokens[1], "start");
         const stop = normalizeBoardToken(tokens[2], "stop");
         if (!start || !stop) return;
-        const nums = tokens.slice(3).map(normalizeNumericToken).filter(Number.isFinite);
+        const numericTokens = tokens.slice(3)
+          .map(token => ({ token, value: normalizeNumericToken(token) }))
+          .filter(item => Number.isFinite(item.value));
+        const nums = numericTokens.map(item => item.value);
         if (nums.length < 7) return;
         const tailOffset = nums.length >= 8 ? 4 : 3;
         const loads = nums[0];
         const speed = nums[2];
-        const startFt = normalizeFeetValue(nums[nums.length - tailOffset]);
-        let endFt = normalizeFeetValue(nums[nums.length - tailOffset + 1]);
+        const startFt = normalizeFeetToken(numericTokens[numericTokens.length - tailOffset]?.token);
+        let endFt = normalizeFeetToken(numericTokens[numericTokens.length - tailOffset + 1]?.token);
         if (direction === "reverse" && startFt >= 20 && endFt > 0 && endFt < 5) endFt += 20;
         const oil = normalizeOilValue(tokens[tokens.length - 1]);
         if (!Number.isFinite(startFt) || !Number.isFinite(endFt) || startFt < 0 || endFt < 0 || startFt > 45 || endFt > 45) return;
@@ -1270,38 +1502,53 @@
         .filter(Boolean);
     }
 
-    function extractRatioValues(text) {
-      const ratioLine = cleanLines(text).find(line => /\bRATIO\b/i.test(line));
-      if (!ratioLine) return [];
-      return ratioLine
-        .split(/\s+/)
-        .map(normalizeRatioValue)
-        .filter(Number.isFinite);
-    }
+function completeRatioValues(values) {
+  const ratios = (values || []).map(Number).filter(value => Number.isFinite(value) && value > 0);
+  if (ratios.length >= 6) return ratios.slice(-6).map(value => Math.round(value * 100) / 100);
+  if (ratios.length === 5) {
+    const [outsideLeft, middleLeft, insideLeft, middleRight, outsideRight] = ratios;
+    const insideRight = Number.isFinite(insideLeft) ? insideLeft : Math.sqrt(Math.max(middleRight, 0.01) * Math.max(middleLeft, 0.01));
+    return [outsideLeft, middleLeft, insideLeft, insideRight, middleRight, outsideRight].map(value => Math.round(value * 100) / 100);
+  }
+  return ratios.map(value => Math.round(value * 100) / 100);
+}
+
+function extractRatioValues(text) {
+  const ratioLine = cleanLines(text).find(line => /TRACK\s+ZONE\s+RATIO|ZONE\s+RATIO|\bRATIO\b/i.test(line));
+  if (!ratioLine) return [];
+  const values = (ratioLine.match(/\d+(?:\.\d+)?/g) || [])
+    .map(normalizeRatioValue)
+    .filter(value => Number.isFinite(value) && value > 0);
+  return completeRatioValues(values);
+}
 
     function firstNumber(text, pattern) {
       const match = normalizeText(text).match(pattern);
       return match ? Number(match[1]) : null;
     }
 
-    function parseMetadata(text) {
-      const normalized = normalizeText(text);
-      return {
-        patternDistanceFt: firstNumber(normalized, /(?:DISTANCE|PATTERN DISTANCE)\D+(\d+(?:\.\d+)?)/i),
-        reverseBrushDropFt: firstNumber(normalized, /(?:DROP BRUSH|REVERSE BRUSH DROP)\D+(\d+(?:\.\d+)?)/i),
-        oilPerBoardUl: firstNumber(normalized, /(?:PUMP|OIL PER BOARD)\D+(\d+(?:\.\d+)?)/i),
-        forwardOilMl: firstNumber(normalized, /FORWARD\D+(\d+(?:\.\d+)?)/i),
-        reverseOilMl: firstNumber(normalized, /REVERSE\D+(\d+(?:\.\d+)?)/i),
-        totalOilMl: firstNumber(normalized, /(?:VOLUME|TOTAL)\D+(\d+(?:\.\d+)?)/i),
-        ratio: firstNumber(normalized, /RATIO\D+(\d+(?:\.\d+)?)/i)
-      };
-    }
+function parseMetadata(text) {
+  const normalized = normalizeText(text);
+  const forwardOilMl = firstNumber(normalized, /F[O0]RWARD\s+[O0]IL\s+T[O0]TAL\D+(\d+(?:\.\d+)?)/i);
+  const reverseOilMl = firstNumber(normalized, /REVERSE\s+[O0]IL\s+T[O0]TAL\D+(\d+(?:\.\d+)?)/i);
+  const volumeOilMl = firstNumber(normalized, /V[O0]LUME\s+[O0]IL\s+T[O0]TAL\D+(\d+(?:\.\d+)?)/i);
+  const summedOilMl = Number.isFinite(forwardOilMl) && Number.isFinite(reverseOilMl) ? Math.round((forwardOilMl + reverseOilMl) * 100) / 100 : null;
+  return {
+    patternDistanceFt: firstNumber(normalized, /[O0]IL\s+PATTERN\s+DISTANCE\D+(\d+(?:\.\d+)?)/i) || firstNumber(normalized, /(?:DISTANCE|PATTERN DISTANCE)\D+(\d+(?:\.\d+)?)/i),
+    reverseBrushDropFt: firstNumber(normalized, /REVERSE\s+BRUSH\s+DROP\D+(\d+(?:\.\d+)?)/i) || firstNumber(normalized, /(?:DROP BRUSH|REVERSE BRUSH DROP)\D+(\d+(?:\.\d+)?)/i),
+    oilPerBoardUl: firstNumber(normalized, /[O0]IL\s+PER\s+B[O0]ARD\D+(\d+(?:\.\d+)?)/i) || firstNumber(normalized, /(?:PUMP|OIL PER BOARD)\D+(\d+(?:\.\d+)?)/i),
+    forwardOilMl,
+    reverseOilMl,
+    totalOilMl: volumeOilMl || summedOilMl,
+    ratio: firstNumber(normalized, /RATIO\D+(\d+(?:\.\d+)?)/i)
+  };
+}
 
     function sectionText(sections, key) {
       return sections.find(section => section.key === key)?.text || "";
     }
 
-    function buildStructuredData(sections) {
+    function buildStructuredData(sections, visualHints = {}) {
       const forwardRows = parseRows(sectionText(sections, "forward"), "forward");
       const reverseRows = parseRows(sectionText(sections, "reverse"), "reverse");
       const ratioValues = extractRatioValues(sectionText(sections, "ratio"));
@@ -1309,7 +1556,7 @@
       const forwardOilUl = forwardRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0);
       const reverseOilUl = reverseRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0);
       const allRows = [...forwardRows, ...reverseRows];
-      const zoneMatrix = estimateZoneMatrix(allRows, metadata.patternDistanceFt || 45, ratioValues);
+      const zoneMatrix = estimateZoneMatrix(allRows, metadata.patternDistanceFt || 45, ratioValues, metadata.totalOilMl || ((forwardOilUl + reverseOilUl) / 1000), { forwardOilMl: metadata.forwardOilMl || (forwardOilUl / 1000), reverseOilMl: metadata.reverseOilMl || (reverseOilUl / 1000) }, visualHints);
       return {
         schema: "kegel-to-brunswick.intermediate.v1",
         sourceFile: state.fileName || $("pdfFile").files[0]?.name || "",
@@ -1327,6 +1574,9 @@
           totalOilUl: forwardOilUl + reverseOilUl
         },
         boardDistribution: estimateBoardDistribution(allRows),
+        visualShape: visualHints.boardShape || [],
+        visualShapeSources: visualHints.sources || [],
+        rowZoneContributions: zoneMatrix[0]?.directionalDiagnostics?.rowZoneContributions || [],
         zoneMatrix,
         ocrProfiles: Object.fromEntries(sections.map(section => [section.key, section.profile || ""]))
       };
@@ -1387,10 +1637,88 @@
       }));
     }
 
-    function defaultZoneEnds(patternDistanceFt) {
+function defaultZoneEnds(patternDistanceFt) {
       const base = [3, 9, 14, 21, 27, 33, 37, 43];
       if (patternDistanceFt > 43) base[7] = Math.min(45, patternDistanceFt);
       return base;
+    }
+
+    function derivedZoneEndsFromRows(rows, patternDistanceFt) {
+      const zoneCount = 8;
+      const minZoneFt = 3;
+      const step = 0.5;
+      const rawDistance = Math.max(zoneCount * minZoneFt, Math.min(45, Number(patternDistanceFt) || 43));
+      const patternDistance = Math.round(rawDistance / step) * step;
+      const scoreMap = new Map();
+      const addScore = (value, score) => {
+        const normalized = normalizeLaneDistance(value, patternDistance);
+        if (!Number.isFinite(normalized) || normalized <= 0.05 || normalized >= patternDistance - 0.05) return;
+        const rounded = Math.round(normalized / step) * step;
+        if (rounded < minZoneFt || rounded > patternDistance - minZoneFt) return;
+        const key = String(rounded);
+        scoreMap.set(key, (scoreMap.get(key) || 0) + Math.max(0, Number(score) || 0));
+      };
+      (rows || []).forEach(row => {
+        const weight = Math.sqrt(Math.max(1, Number(row.oil) || 1));
+        addScore(row.startFt, weight);
+        addScore(row.endFt, weight);
+      });
+
+      const positiveForward = (rows || []).filter(row => row.direction === "forward" && (Number(row.oil) || 0) > 0);
+      const positiveReverse = (rows || []).filter(row => row.direction === "reverse" && (Number(row.oil) || 0) > 0);
+      const forwardDropEnd = positiveForward.length ? Math.max(...positiveForward.map(row => Math.max(Number(row.startFt) || 0, Number(row.endFt) || 0))) : NaN;
+      const reverseDropStart = positiveReverse.length ? Math.max(...positiveReverse.map(row => Math.max(Number(row.startFt) || 0, Number(row.endFt) || 0))) : NaN;
+      addScore(forwardDropEnd, 80);
+      addScore(reverseDropStart, 80);
+
+      const legacyPrior = [3, 9, 14, 21, 27, 33, 37]
+        .filter(value => value >= minZoneFt && value <= patternDistance - minZoneFt)
+        .map(value => Math.round(value / step) * step);
+      legacyPrior.forEach(value => addScore(value, 0.35));
+
+      const grid = [];
+      for (let value = minZoneFt; value <= patternDistance - minZoneFt + 1e-9; value += step) {
+        grid.push(Math.round(value / step) * step);
+      }
+      const localScore = value => {
+        const direct = scoreMap.get(String(value)) || 0;
+        const near = [-1, 1].reduce((sum, offset) => sum + (scoreMap.get(String(value + offset * step)) || 0) * 0.25, 0);
+        return direct + near;
+      };
+      const states = new Map([[0, { score: 0, path: [] }]]);
+      for (let boundaryIndex = 1; boundaryIndex < zoneCount; boundaryIndex++) {
+        const next = new Map();
+        const remainingZones = zoneCount - boundaryIndex;
+        states.forEach((state, previous) => {
+          grid.forEach(value => {
+            const length = value - previous;
+            if (length < minZoneFt - 1e-9) return;
+            if (patternDistance - value < remainingZones * minZoneFt - 1e-9) return;
+            const longZonePenalty = Math.max(0, length - 9) * 0.08;
+            const score = state.score + localScore(value) - longZonePenalty;
+            const current = next.get(value);
+            if (!current || score > current.score) next.set(value, { score, path: [...state.path, value] });
+          });
+        });
+        states.clear();
+        next.forEach((value, key) => states.set(key, value));
+      }
+      let best = null;
+      states.forEach((state, last) => {
+        const finalLength = patternDistance - last;
+        if (finalLength < minZoneFt - 1e-9) return;
+        const score = state.score - Math.max(0, finalLength - 9) * 0.08;
+        if (!best || score > best.score) best = { score, path: state.path };
+      });
+      if (!best) {
+        const fallback = legacyPrior.slice(0, zoneCount - 1);
+        while (fallback.length < zoneCount - 1) {
+          const value = Math.round((patternDistance * (fallback.length + 1) / zoneCount) / step) * step;
+          if (!fallback.includes(value)) fallback.push(value);
+        }
+        best = { score: 0, path: fallback.sort((a, b) => a - b) };
+      }
+      return [...best.path.slice(0, zoneCount - 1), patternDistance].map(value => Math.round(value * 2) / 2);
     }
 
     function ratioBandDefinitions() {
@@ -1487,52 +1815,383 @@
       });
     }
 
-    function estimateZoneMatrix(rows, patternDistanceFt, ratioValues = []) {
-      const zoneEnds = defaultZoneEnds(patternDistanceFt);
-      const zoneStarts = zoneEnds.map((end, index) => index === 0 ? 0 : zoneEnds[index - 1]);
-      const raw = zoneEnds.map((end, zoneIndex) => ({
-        zone: zoneIndex + 1,
-        startFt: zoneStarts[zoneIndex],
-        endFt: end,
-        values: Array(39).fill(0)
-      }));
-      rows.forEach(row => {
-        const coords = coordsBetween(row.start, row.stop);
-        const laneStartFt = normalizeLaneDistance(row.startFt, patternDistanceFt);
-        const laneEndFt = normalizeLaneDistance(row.endFt, patternDistanceFt);
-        const length = Math.abs(laneEndFt - laneStartFt);
-        if (!coords.length || !Number.isFinite(row.oil) || length <= 0) return;
-        const rowStart = Math.min(laneStartFt, laneEndFt);
-        const rowEnd = Math.max(laneStartFt, laneEndFt);
-        const density = row.oil / length / coords.length;
-        raw.forEach(zone => {
-          const overlap = Math.max(0, Math.min(rowEnd, zone.endFt) - Math.max(rowStart, zone.startFt));
-          if (overlap <= 0) return;
-          coords.forEach(coord => {
-            const index = coordToSheetIndex(coord);
-            if (index >= 0 && index < 39) zone.values[index] += density * overlap;
-          });
-        });
-      });
-      const ratioAdjustments = applyRatioConstraints(raw, ratioValues);
-      const decayAdjustments = applyLengthwiseDecay(raw);
-      const globalMax = Math.max(...raw.flatMap(zone => zone.values));
-      return raw.map(zone => {
-        const decay = decayAdjustments.find(item => item.zone === zone.zone);
-        return {
-          zone: zone.zone,
-          startFt: zone.startFt,
-          endFt: zone.endFt,
-          ratioAdjusted: ratioAdjustments.length > 0,
-          lengthwiseDecayAdjusted: decayAdjustments.some(item => item.scale < 1),
-          lengthwiseScale: decay?.scale ?? 1,
-          zonePeakOilUl: Math.round(Math.max(...zone.values) * 10) / 10,
-          rawOilUl: zone.values.map(value => Math.round(value * 10) / 10),
-          percent: zone.values.map(value => globalMax > 0 ? Math.round((value / globalMax) * 100) : 0)
-        };
+
+    function applyRatioToBoardShape(values, ratioValues) {
+      const ratios = (ratioValues || []).map(Number).filter(value => Number.isFinite(value) && value > 0).slice(0, 6);
+      if (ratios.length < 6) return;
+      const bands = ratioBandDefinitions();
+      const middleBand = bands.find(band => band.ratioIndex === null);
+      const middleTotal = sumIndexes(values, middleBand.indexes);
+      if (middleTotal <= 0) return;
+      bands.forEach(band => {
+        if (band.ratioIndex === null) return;
+        const before = sumIndexes(values, band.indexes);
+        const ratio = ratios[band.ratioIndex];
+        if (before <= 0 || !ratio) return;
+        const scale = (middleTotal / ratio) / before;
+        band.indexes.forEach(index => { values[index] *= scale; });
       });
     }
 
+
+    function estimateTemplateOilTotalMl(zones) {
+      const total = (zones || []).reduce((sum, zone) => {
+        const length = Math.max(0, (Number(zone.endFt) || 0) - (Number(zone.startFt) || 0));
+        const units = zone.units || zone.percent || [];
+        return sum + units.reduce((rowSum, value) => rowSum + (Number(value) || 0), 0) * length;
+      }, 0);
+      return Math.round((total / 16.7 * 10 * 0.7 / 1000) * 1000) / 1000;
+    }
+
+    function weightedBandTotalsFromZones(zones) {
+      const bands = ratioBandDefinitions();
+      return bands.map(band => zones.reduce((sum, zone) => {
+        const length = Math.max(0, (Number(zone.endFt) || 0) - (Number(zone.startFt) || 0));
+        const units = zone.units || zone.percent || [];
+        return sum + sumIndexes(units, band.indexes) * length;
+      }, 0));
+    }
+
+    function calculatedRatioValuesFromZones(zones) {
+      const totals = weightedBandTotalsFromZones(zones);
+      const middle = totals[3] || 0;
+      return [0, 1, 2, 4, 5, 6].map(index => totals[index] > 0 ? Math.round((middle / totals[index]) * 100) / 100 : null);
+    }
+
+    function applyRatioToZones(zones, ratioValues) {
+      const ratios = (ratioValues || []).map(Number).filter(value => Number.isFinite(value) && value > 0).slice(0, 6);
+      if (ratios.length < 6) return;
+      const bandIndexes = [0, 1, 2, 4, 5, 6];
+      const bands = ratioBandDefinitions();
+      for (let iteration = 0; iteration < 6; iteration++) {
+        const totals = weightedBandTotalsFromZones(zones);
+        const middle = totals[3] || 0;
+        if (middle <= 0) return;
+        bandIndexes.forEach((bandIndex, ratioIndex) => {
+          const before = totals[bandIndex] || 0;
+          const target = middle / ratios[ratioIndex];
+          if (before <= 0 || target <= 0) return;
+          const scale = target / before;
+          bands[bandIndex].indexes.forEach(boardIndex => {
+            zones.forEach(zone => { zone.units[boardIndex] = Math.max(0, zone.units[boardIndex] * scale); });
+          });
+        });
+      }
+    }
+
+    function roundedOilMlForScale(zones, scale) {
+      return estimateTemplateOilTotalMl(zones.map(zone => ({
+        startFt: zone.startFt,
+        endFt: zone.endFt,
+        units: zone.units.map(value => Math.max(0, Math.min(100, Math.round(value * scale))))
+      })));
+    }
+
+    function scaleUnitsToOilTotal(zones, targetOilMl) {
+      if (!Number.isFinite(targetOilMl) || targetOilMl <= 0) {
+        const beforeMl = estimateTemplateOilTotalMl(zones);
+        return { applied: false, beforeMl, afterMl: beforeMl, scale: 1 };
+      }
+      const beforeMl = estimateTemplateOilTotalMl(zones);
+      let low = 0;
+      let high = 4;
+      while (roundedOilMlForScale(zones, high) < targetOilMl && high < 64) high *= 2;
+      let bestScale = 1;
+      let bestError = Infinity;
+      for (let i = 0; i < 40; i++) {
+        const mid = (low + high) / 2;
+        const ml = roundedOilMlForScale(zones, mid);
+        const error = Math.abs(ml - targetOilMl);
+        if (error < bestError) { bestError = error; bestScale = mid; }
+        if (ml < targetOilMl) low = mid;
+        else high = mid;
+      }
+      zones.forEach(zone => {
+        zone.units = zone.units.map(value => Math.max(0, Math.min(100, Math.round(value * bestScale))));
+        zone.percent = zone.units.slice();
+      });
+      return { applied: true, beforeMl, afterMl: estimateTemplateOilTotalMl(zones), scale: Math.round(bestScale * 1000) / 1000 };
+    }
+
+function estimateZoneMatrix(rows, patternDistanceFt, ratioValues = [], targetOilMl = null, oilTargets = {}) {
+  const zoneEnds = defaultZoneEnds(patternDistanceFt);
+  const zoneStarts = zoneEnds.map((end, index) => index === 0 ? 0 : zoneEnds[index - 1]);
+  const forwardRows = rows.filter(row => row.direction === "forward");
+  const reverseRows = rows.filter(row => row.direction === "reverse");
+
+  function zoneOilForRows(inputRows) {
+    return zoneEnds.map((end, zoneIndex) => {
+      const start = zoneStarts[zoneIndex];
+      return inputRows.reduce((sum, row) => {
+        const laneStartFt = normalizeLaneDistance(row.startFt, patternDistanceFt);
+        const laneEndFt = normalizeLaneDistance(row.endFt, patternDistanceFt);
+        if (!Number.isFinite(laneStartFt) || !Number.isFinite(laneEndFt)) return sum;
+        const rowStart = Math.min(laneStartFt, laneEndFt);
+        const rowEnd = Math.max(laneStartFt, laneEndFt);
+        const length = Math.max(0.001, rowEnd - rowStart);
+        const overlap = Math.max(0, Math.min(rowEnd, end) - Math.max(rowStart, start));
+        return sum + (Number(row.oil) || 0) * (overlap / length);
+      }, 0);
+    });
+  }
+
+  function rowZoneContributions(inputRows) {
+    return (inputRows || []).map((row, rowIndex) => {
+      const laneStartFt = normalizeLaneDistance(row.startFt, patternDistanceFt);
+      const laneEndFt = normalizeLaneDistance(row.endFt, patternDistanceFt);
+      const rowStart = Math.min(laneStartFt, laneEndFt);
+      const rowEnd = Math.max(laneStartFt, laneEndFt);
+      const length = Math.max(0.001, rowEnd - rowStart);
+      const oil = Number(row.oil) || 0;
+      const zones = zoneEnds.map((end, zoneIndex) => {
+        const start = zoneStarts[zoneIndex];
+        const overlapFt = Number.isFinite(rowStart) && Number.isFinite(rowEnd) ? Math.max(0, Math.min(rowEnd, end) - Math.max(rowStart, start)) : 0;
+        const oilUl = oil > 0 ? oil * (overlapFt / length) : 0;
+        return {
+          zone: zoneIndex + 1,
+          startFt: start,
+          endFt: end,
+          overlapFt: Math.round(overlapFt * 100) / 100,
+          oilUl: Math.round(oilUl * 10) / 10
+        };
+      });
+      const activeZones = zones.filter(zone => zone.oilUl > 0);
+      const coords = coordsBetween(row.start, row.stop);
+      return {
+        rowIndex: rowIndex + 1,
+        direction: row.direction || "",
+        boardRange: String(row.start || "") + "-" + String(row.stop || ""),
+        boardCount: coords.length,
+        loads: Number(row.loads) || 0,
+        speed: Number(row.speed) || 0,
+        startFt: Number(row.startFt),
+        endFt: Number(row.endFt),
+        oilUl: oil,
+        activeZoneCount: activeZones.length,
+        activeZones,
+        zones
+      };
+    });
+  }
+
+  function normalizedBoardShape(inputRows) {
+    const prior = [0, 3, 11, 26, 37, 43, 66, 66, 76, 92, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 92, 65, 53, 37, 26, 22, 11, 7, 3, 0];
+    let shape = estimateBoardDistribution(inputRows).map(item => Number(item.oilUl) || 0);
+    const maxBoardOil = Math.max(...shape);
+    if (maxBoardOil <= 0) shape = prior.slice();
+    else shape = shape.map(value => value / maxBoardOil * 100);
+    const blend = inputRows.length ? 0.12 : 1;
+    shape = shape.map((value, index) => value * (1 - blend) + prior[index] * blend);
+    const shapeMax = Math.max(...shape);
+    return shapeMax > 0 ? shape.map(value => value / shapeMax * 100) : shape;
+  }
+
+  function zoneFactorsFromOil(zoneOil, mode) {
+    const tapers = {
+      combined: [1, 0.96, 0.92, 0.87, 0.8, 0.66, 0.41, 0],
+      forward: [0.82, 1, 0.97, 0.91, 0.8, 0.62, 0.35, 0],
+      reverse: [0.12, 0.42, 0.68, 0.88, 1, 0.84, 0.52, 0]
+    };
+    const taper = tapers[mode] || tapers.combined;
+    const maxZoneOil = Math.max(...zoneOil);
+    const factors = zoneOil.map((oil, index) => {
+      const observed = maxZoneOil > 0 ? oil / maxZoneOil : taper[index];
+      const observedWeight = maxZoneOil > 0 ? 0.84 : 0;
+      const factor = observed * observedWeight + taper[index] * (1 - observedWeight);
+      return Math.max(0, Math.min(1, factor));
+    });
+    if (factors.length > 2 && mode === "combined") {
+      const z1 = Number(zoneOil[0]) || 0;
+      const neighbor = Math.max(Number(zoneOil[1]) || 0, (Number(zoneOil[2]) || 0) * 0.75);
+      const spikeRatio = neighbor > 0 ? z1 / neighbor : 0;
+      if (spikeRatio > 1.35) factors[0] = Math.min(factors[0], factors[1] * 0.96);
+    }
+    if (factors.length) factors[factors.length - 1] = 0;
+    return factors;
+  }
+
+  function makeZones(inputRows, mode) {
+    const shape = normalizedBoardShape(inputRows);
+    const zoneOil = zoneOilForRows(inputRows);
+    const factors = zoneFactorsFromOil(zoneOil, mode);
+    return zoneEnds.map((end, zoneIndex) => {
+      const start = zoneStarts[zoneIndex];
+      const units = shape.map(value => Math.max(0, Math.min(100, value * factors[zoneIndex])));
+      return { zone: zoneIndex + 1, startFt: start, endFt: end, units, percent: units.slice(), zoneOilUl: Math.round((zoneOil[zoneIndex] || 0) * 10) / 10, factor: factors[zoneIndex] };
+    });
+  }
+
+  function cloneZonesForPolish(zones) {
+    return zones.map(zone => ({
+      ...zone,
+      units: (zone.units || []).slice(),
+      percent: (zone.percent || zone.units || []).slice()
+    }));
+  }
+
+  function ratioTargetErrorScore(zones, oilMl, ratioValues) {
+    const ratios = (ratioValues || []).map(Number).filter(value => Number.isFinite(value) && value > 0).slice(0, 6);
+    const actual = calculatedRatioValuesFromZones(zones);
+    let score = 0;
+    if (Number.isFinite(oilMl) && oilMl > 0) {
+      score += Math.abs(estimateTemplateOilTotalMl(zones) - oilMl) / oilMl;
+    }
+    ratios.forEach((target, index) => {
+      const value = actual[index];
+      if (Number.isFinite(value) && value > 0) score += Math.abs(Math.log(value / target));
+      else score += 10;
+    });
+    return score;
+  }
+
+  function capZonesAtUnitLimit(zones) {
+    const maxUnit = Math.max(...zones.flatMap(zone => zone.units || []));
+    if (maxUnit > 100) {
+      zones.forEach(zone => { zone.units = zone.units.map(value => value / maxUnit * 100); });
+    }
+  }
+
+  function refineZones(zones, oilMl, ratioCycles = 4) {
+    for (let cycle = 0; cycle < ratioCycles; cycle++) {
+      applyRatioToZones(zones, ratioValues);
+      capZonesAtUnitLimit(zones);
+      scaleUnitsToOilTotal(zones, oilMl);
+    }
+    return zones;
+  }
+
+  function polishZonesToTargets(zones, oilMl, ratioValues) {
+    const ratios = (ratioValues || []).map(Number).filter(value => Number.isFinite(value) && value > 0).slice(0, 6);
+    if (!ratios.length && !(Number.isFinite(oilMl) && oilMl > 0)) return zones;
+    let working = cloneZonesForPolish(zones);
+    let best = cloneZonesForPolish(working);
+    let bestScore = ratioTargetErrorScore(best, oilMl, ratios);
+    for (let cycle = 0; cycle < 24; cycle++) {
+      if (ratios.length >= 6) applyRatioToZones(working, ratios);
+      capZonesAtUnitLimit(working);
+      scaleUnitsToOilTotal(working, oilMl);
+      if (ratios.length >= 6) applyRatioToZones(working, ratios);
+      capZonesAtUnitLimit(working);
+      scaleUnitsToOilTotal(working, oilMl);
+      const score = ratioTargetErrorScore(working, oilMl, ratios);
+      if (score < bestScore) {
+        bestScore = score;
+        best = cloneZonesForPolish(working);
+      }
+    }
+    best.forEach(zone => {
+      zone.units = zone.units.map(value => Math.max(0, Math.min(100, Math.round(value))));
+      zone.percent = zone.units.slice();
+    });
+    return best;
+  }
+
+  function combineZones(aZones, bZones, aWeight = 1, bWeight = 1, zoneWeights = null) {
+    return zoneEnds.map((end, zoneIndex) => {
+      const zoneWeight = zoneWeights ? zoneWeights[zoneIndex] : 1;
+      return {
+        zone: zoneIndex + 1,
+        startFt: zoneStarts[zoneIndex],
+        endFt: end,
+        units: aZones[zoneIndex].units.map((value, boardIndex) => (value * aWeight + bZones[zoneIndex].units[boardIndex] * bWeight) * zoneWeight),
+        percent: []
+      };
+    });
+  }
+
+  function combinedZoneWeights(forwardZoneOil, reverseZoneOil) {
+    const combinedOil = forwardZoneOil.map((value, index) => (Number(value) || 0) + (Number(reverseZoneOil[index]) || 0));
+    const maxOil = Math.max(...combinedOil);
+    if (!(maxOil > 0)) return zoneEnds.map((_, index) => index === zoneEnds.length - 1 ? 0 : 1);
+    const weights = combinedOil.map(value => value / maxOil);
+    if (weights.length) weights[weights.length - 1] = 0;
+    return weights;
+  }
+
+  function enforceCombinedZoneStrength(zones, combinedZoneOil) {
+    const maxOil = Math.max(...combinedZoneOil.map(value => Number(value) || 0));
+    if (!(maxOil > 0)) return zones;
+    zones.forEach((zone, index) => {
+      const targetPeak = index === zones.length - 1 ? 0 : Math.max(0, Math.min(100, ((Number(combinedZoneOil[index]) || 0) / maxOil) * 100));
+      const currentPeak = Math.max(...(zone.units || []));
+      if (currentPeak > 0) {
+        const scale = targetPeak / currentPeak;
+        zone.units = zone.units.map(value => Math.max(0, Math.min(100, value * scale)));
+      } else if (targetPeak > 0) {
+        zone.units = zone.units.map(() => 0);
+      }
+      zone.percent = zone.units.slice();
+      zone.combinedTargetPeak = Math.round(targetPeak * 10) / 10;
+    });
+    return zones;
+  }
+
+  const fallbackForwardOilMl = forwardRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0) / 1000;
+  const fallbackReverseOilMl = reverseRows.reduce((sum, row) => sum + (Number(row.oil) || 0), 0) / 1000;
+  const forwardTargetMl = Number.isFinite(oilTargets.forwardOilMl) && oilTargets.forwardOilMl > 0 ? oilTargets.forwardOilMl : fallbackForwardOilMl;
+  const reverseTargetMl = Number.isFinite(oilTargets.reverseOilMl) && oilTargets.reverseOilMl > 0 ? oilTargets.reverseOilMl : fallbackReverseOilMl;
+  const totalTargetMl = Number.isFinite(targetOilMl) && targetOilMl > 0 ? targetOilMl : forwardTargetMl + reverseTargetMl;
+
+  const forwardZoneOil = zoneOilForRows(forwardRows);
+  const reverseZoneOil = zoneOilForRows(reverseRows);
+  const zoneWeights = combinedZoneWeights(forwardZoneOil, reverseZoneOil);
+  const baseZones = refineZones(makeZones(rows, "combined"), totalTargetMl, 5);
+  const forwardZones = refineZones(makeZones(forwardRows, "forward"), forwardTargetMl, 2);
+  const reverseZones = refineZones(makeZones(reverseRows, "reverse"), reverseTargetMl, 2);
+  let splitZones = combineZones(forwardZones, reverseZones, 1.08, 0.92, zoneWeights);
+  const maxSplit = Math.max(...splitZones.flatMap(zone => zone.units));
+  if (maxSplit > 100) splitZones.forEach(zone => { zone.units = zone.units.map(value => value / maxSplit * 100); });
+  splitZones = refineZones(splitZones, totalTargetMl, 4);
+
+  const combinedZoneOil = forwardZoneOil.map((value, index) => (Number(value) || 0) + (Number(reverseZoneOil[index]) || 0));
+  const splitWeight = forwardRows.length && reverseRows.length ? 0.12 : 0;
+  let zones = combineZones(baseZones, splitZones, 1 - splitWeight, splitWeight);
+  zones = refineZones(zones, totalTargetMl, 4);
+  zones = enforceCombinedZoneStrength(zones, combinedZoneOil);
+  scaleUnitsToOilTotal(zones, totalTargetMl);
+  zones = polishZonesToTargets(zones, totalTargetMl, ratioValues);
+  zones = enforceCombinedZoneStrength(zones, combinedZoneOil);
+  scaleUnitsToOilTotal(zones, totalTargetMl);
+
+  const calculatedRatios = calculatedRatioValuesFromZones(zones);
+  const calculatedOilTotalMl = estimateTemplateOilTotalMl(zones);
+  const directionalDiagnostics = {
+    forwardTargetMl: Math.round(forwardTargetMl * 1000) / 1000,
+    reverseTargetMl: Math.round(reverseTargetMl * 1000) / 1000,
+    totalTargetMl: Math.round(totalTargetMl * 1000) / 1000,
+    forwardEstimatedMl: estimateTemplateOilTotalMl(forwardZones),
+    reverseEstimatedMl: estimateTemplateOilTotalMl(reverseZones),
+    splitEstimatedMl: estimateTemplateOilTotalMl(splitZones),
+    splitWeight,
+    zoneWeights: zoneWeights.map(value => Math.round(value * 1000) / 1000),
+    forwardZoneOilUl: forwardZoneOil.map(value => Math.round(value * 10) / 10),
+    reverseZoneOilUl: reverseZoneOil.map(value => Math.round(value * 10) / 10),
+    combinedZoneOilUl: combinedZoneOil.map(value => Math.round(value * 10) / 10),
+    combinedTargetPeaks: zones.map(zone => zone.combinedTargetPeak ?? null),
+    rowZoneContributions: rowZoneContributions(rows)
+  };
+
+  return zones.map((zone, index) => {
+    zone.units = zone.units.map(value => Math.max(0, Math.min(100, Math.round(value))));
+    zone.percent = zone.units.slice();
+    return {
+      zone: zone.zone,
+      startFt: zone.startFt,
+      endFt: zone.endFt,
+      ratioAdjusted: (ratioValues || []).length >= 6,
+      lengthwiseDecayAdjusted: true,
+      lengthwiseScale: Math.round((Math.max(...zone.units) / 100) * 1000) / 1000,
+      zonePeakOilUl: Math.round(Math.max(...zone.units) * 10) / 10,
+      combinedTargetPeak: zone.combinedTargetPeak ?? null,
+      rawOilUl: zone.units.slice(),
+      units: zone.units.slice(),
+      percent: zone.percent.slice(),
+      calculatedRatios,
+      calculatedOilTotalMl,
+      directionalDiagnostics
+    };
+  });
+}
     function sheetFromAoa(XLSX, rows) {
       const sheet = XLSX.utils.aoa_to_sheet(rows);
       const widthCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
@@ -1726,6 +2385,122 @@
       return true;
     }
 
+
+      function zipU16(view, offset) { return view.getUint16(offset, true); }
+      function zipU32(view, offset) { return view.getUint32(offset, true); }
+      function makeCrc32Table() { const table = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1); table[n] = c >>> 0; } return table; }
+      const crc32Table = makeCrc32Table();
+      function crc32(bytes) { let c = 0xffffffff; for (let i = 0; i < bytes.length; i++) c = crc32Table[(c ^ bytes[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+      function parseZipEntries(arrayBuffer) {
+        const bytes = new Uint8Array(arrayBuffer); const view = new DataView(arrayBuffer); let eocd = -1;
+        for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 66000); i--) { if (zipU32(view, i) === 0x06054b50) { eocd = i; break; } }
+        if (eocd < 0) throw new Error("xlsxの終端情報が見つかりません。");
+        const total = zipU16(view, eocd + 10); let offset = zipU32(view, eocd + 16); const decoder = new TextDecoder("utf-8"); const entries = [];
+        for (let i = 0; i < total; i++) {
+          if (zipU32(view, offset) !== 0x02014b50) throw new Error("xlsxの中央ディレクトリを読めません。");
+          const method = zipU16(view, offset + 10); const modTime = zipU16(view, offset + 12); const modDate = zipU16(view, offset + 14); const crc = zipU32(view, offset + 16);
+          const compressedSize = zipU32(view, offset + 20); const uncompressedSize = zipU32(view, offset + 24); const nameLength = zipU16(view, offset + 28); const extraLength = zipU16(view, offset + 30); const commentLength = zipU16(view, offset + 32); const localHeaderOffset = zipU32(view, offset + 42);
+          const nameBytes = bytes.slice(offset + 46, offset + 46 + nameLength); const name = decoder.decode(nameBytes);
+          if (zipU32(view, localHeaderOffset) !== 0x04034b50) throw new Error("xlsxのローカルヘッダーを読めません: " + name);
+          const localNameLength = zipU16(view, localHeaderOffset + 26); const localExtraLength = zipU16(view, localHeaderOffset + 28); const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
+          entries.push({ name, nameBytes, method, modTime, modDate, crc, compressedSize, uncompressedSize, rawData: bytes.slice(dataStart, dataStart + compressedSize) });
+          offset += 46 + nameLength + extraLength + commentLength;
+        }
+        return entries;
+      }
+      async function inflateZipEntry(entry) {
+        if (entry.method === 0) return entry.rawData;
+        if (entry.method !== 8) throw new Error("未対応のxlsx圧縮方式です: " + entry.name);
+        if (!window.DecompressionStream) throw new Error("このブラウザではxlsx内部編集に必要な展開機能が使えません。");
+        const stream = new Blob([entry.rawData]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+        return new Uint8Array(await new Response(stream).arrayBuffer());
+      }
+      function concatBytes(parts) { const total = parts.reduce((sum, part) => sum + part.length, 0); const out = new Uint8Array(total); let offset = 0; for (const part of parts) { out.set(part, offset); offset += part.length; } return out; }
+      function writeU16(out, offset, value) { out[offset] = value & 255; out[offset + 1] = (value >>> 8) & 255; }
+      function writeU32(out, offset, value) { out[offset] = value & 255; out[offset + 1] = (value >>> 8) & 255; out[offset + 2] = (value >>> 16) & 255; out[offset + 3] = (value >>> 24) & 255; }
+      function zipRecord(signature, length) { const out = new Uint8Array(length); writeU32(out, 0, signature); return out; }
+      function writeZipEntries(entries) {
+        const localParts = []; const centralParts = []; let offset = 0;
+        for (const entry of entries) {
+          const nameBytes = entry.nameBytes || new TextEncoder().encode(entry.name); const data = entry.rawData;
+          const local = zipRecord(0x04034b50, 30 + nameBytes.length);
+          writeU16(local, 4, 20); writeU16(local, 6, 0x0800); writeU16(local, 8, entry.method); writeU16(local, 10, entry.modTime || 0); writeU16(local, 12, entry.modDate || 0); writeU32(local, 14, entry.crc); writeU32(local, 18, data.length); writeU32(local, 22, entry.uncompressedSize); writeU16(local, 26, nameBytes.length); local.set(nameBytes, 30); localParts.push(local, data);
+          const central = zipRecord(0x02014b50, 46 + nameBytes.length);
+          writeU16(central, 4, 20); writeU16(central, 6, 20); writeU16(central, 8, 0x0800); writeU16(central, 10, entry.method); writeU16(central, 12, entry.modTime || 0); writeU16(central, 14, entry.modDate || 0); writeU32(central, 16, entry.crc); writeU32(central, 20, data.length); writeU32(central, 24, entry.uncompressedSize); writeU16(central, 28, nameBytes.length); writeU32(central, 42, offset); central.set(nameBytes, 46); centralParts.push(central);
+          offset += local.length + data.length;
+        }
+        const centralOffset = offset; const centralData = concatBytes(centralParts); const eocd = zipRecord(0x06054b50, 22); writeU16(eocd, 8, entries.length); writeU16(eocd, 10, entries.length); writeU32(eocd, 12, centralData.length); writeU32(eocd, 16, centralOffset); return concatBytes([...localParts, centralData, eocd]);
+      }
+      function escapeRegex(text) { return String(text).replace(/[|\\{}()[\]^$+*?.]/g, "\\$&"); }
+      function escapeXml(text) { return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+      function cellXmlPattern(address) {
+        const escaped = escapeRegex(address);
+        return new RegExp('<([A-Za-z0-9]+:)?c\\b[^>]*\\br="' + escaped + '"[^>]*(?:\\/>|>[\\s\\S]*?<\\/(?:[A-Za-z0-9]+:)?c>)');
+      }
+
+      function patchCellXml(sheetXml, address, value, type = 'number', styleOverride = null) {
+        const match = sheetXml.match(cellXmlPattern(address));
+        if (!match) throw new Error('テンプレート内に入力セルが見つかりません: ' + address);
+        const prefix = match[1] || '';
+        const originalStyle = (match[0].match(/\bs="([^"]*)"/) || [])[1] || '';
+        const style = styleOverride !== null && styleOverride !== undefined ? String(styleOverride) : originalStyle;
+        const attrText = 'r="' + address + '"' + (style ? ' s="' + escapeXml(style) + '"' : '');
+        const replacement = type === 'text'
+          ? '<' + prefix + 'c ' + attrText + ' t="inlineStr"><' + prefix + 'is><' + prefix + 't>' + escapeXml(value) + '</' + prefix + 't></' + prefix + 'is></' + prefix + 'c>'
+          : '<' + prefix + 'c ' + attrText + '><' + prefix + 'v>' + (Number(value) || 0) + '</' + prefix + 'v></' + prefix + 'c>';
+        return sheetXml.replace(match[0], replacement);
+      }
+
+      function getCellStyleId(sheetXml, address) {
+        const match = sheetXml.match(cellXmlPattern(address));
+        if (!match) return '0';
+        return (match[0].match(/\bs="([^"]*)"/) || [])[1] || '0';
+      }
+
+      function splitXmlElements(xml, containerName) {
+        const containerMatch = xml.match(new RegExp("<" + containerName + "\\b[^>]*>([\\s\\S]*?)<\\/" + containerName + ">"));
+        if (!containerMatch) return [];
+        const inner = containerMatch[1];
+        const itemName = containerName === "fonts" ? "font" : "xf";
+        return inner.match(new RegExp("<" + itemName + "\\b[^>]*(?:\\/>|>[\\s\\S]*?<\\/" + itemName + ">)", "g")) || [];
+      }
+
+      function withReadableFont(fontXml, size = 11) {
+        let xml = fontXml || "<font/>";
+        if (/\<sz\b[^>]*\/>/.test(xml)) xml = xml.replace(/\<sz\b[^>]*\/>/, "<sz val=\"" + size + "\"/>");
+        else if (/<font\b[^>]*>/.test(xml)) xml = xml.replace(/<font\b[^>]*>/, match => match + "<sz val=\"" + size + "\"/>");
+        else xml = "<font><sz val=\"" + size + "\"/></font>";
+        return xml;
+      }
+
+      function patchOptionalCellXml(sheetXml, address, value, type = "number", styleOverride = null) { try { return patchCellXml(sheetXml, address, value, type, styleOverride); } catch (error) { log("任意セルをスキップ: " + address + " / " + (error?.message || error)); return sheetXml; } }
+      function formatExportDate() { const date = new Date(); return String(date.getMonth() + 1).padStart(2, "0") + "/" + String(date.getDate()).padStart(2, "0") + "/" + date.getFullYear(); }
+      function sheetColumnName(index) {
+        let n = Number(index) || 0;
+        let name = "";
+        while (n > 0) {
+          const mod = (n - 1) % 26;
+          name = String.fromCharCode(65 + mod) + name;
+          n = Math.floor((n - 1) / 26);
+        }
+        return name;
+      }
+      async function buildPreservedBrunswickWorkbook(templateBytes, data) {
+        const entries = parseZipEntries(templateBytes); const sheetEntry = entries.find(entry => entry.name === "xl/worksheets/sheet1.xml"); if (!sheetEntry) throw new Error("Pattern DesignシートXMLがテンプレート内に見つかりません。");
+        const stylesEntry = entries.find(entry => entry.name === "xl/styles.xml");
+        const decoder = new TextDecoder("utf-8"); const encoder = new TextEncoder(); let sheetXml = decoder.decode(await inflateZipEntry(sheetEntry)); const sourceName = safeFileBase(data.sourceFile);
+        const zoneEndCells = ["G21", "K21", "O21", "S21", "W21", "AA21", "AE21", "AI21"];
+        const unitCells = [];
+        data.zoneMatrix.slice(0, 8).forEach((zone, rowIndex) => { for (let colIndex = 0; colIndex < 39; colIndex++) unitCells.push(sheetColumnName(3 + colIndex) + (29 + rowIndex)); });
+        // Keep the Brunswick template formatting, formulas, protection, borders, and fonts intact.
+        // Only the existing input cells are replaced with values while preserving each cell's original style id.
+        sheetXml = patchOptionalCellXml(sheetXml, 'F9', formatExportDate(), 'text'); sheetXml = patchOptionalCellXml(sheetXml, 'T10', sourceName, 'text'); sheetXml = patchOptionalCellXml(sheetXml, 'AA17', sourceName, 'text');
+        data.zoneMatrix.slice(0, 8).forEach((zone, index) => { const address = zoneEndCells[index]; sheetXml = patchCellXml(sheetXml, address, Math.round((Number(zone.endFt) || 0) * 100) / 100, 'number'); });
+        data.zoneMatrix.slice(0, 8).forEach((zone, rowIndex) => { const values = zone.units || zone.percent || []; for (let colIndex = 0; colIndex < 39; colIndex++) { const address = sheetColumnName(3 + colIndex) + (29 + rowIndex); sheetXml = patchCellXml(sheetXml, address, Math.round(Number(values[colIndex] || 0) * 100) / 100, 'number'); } });
+        const updated = encoder.encode(sheetXml); sheetEntry.method = 0; sheetEntry.rawData = updated; sheetEntry.crc = crc32(updated); sheetEntry.compressedSize = updated.length; sheetEntry.uncompressedSize = updated.length; return writeZipEntries(entries);
+      }
+
+
     function safeFileBase(name) {
       return String(name || "kegel_pattern")
         .replace(/\.[^.]+$/, "")
@@ -1761,12 +2536,22 @@
       ].join("\n");
     }
 
+    async function ensureOutputDirectoryHandle() {
+      if (!window.showDirectoryPicker || state.outputDirectoryHandle) return Boolean(state.outputDirectoryHandle);
+      try {
+        setProgress(5, "保存先フォルダを選択してください。キャンセル時はダウンロード保存に切り替えます。");
+        state.outputDirectoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+        log("保存先フォルダを選択しました。");
+        return true;
+      } catch (error) {
+        log("保存先フォルダ選択をスキップ: " + (error?.message || error));
+        setProgress(5, "保存先未選択のため、ブラウザのダウンロード保存に切り替えます。");
+        return false;
+      }
+    }
+
     async function saveFileWithPicker(fileName, blob) {
-      if (window.showDirectoryPicker) {
-        if (!state.outputDirectoryHandle) {
-          setProgress(92, "保存先フォルダを選択してください。PDFと同じフォルダを選んでください。");
-          state.outputDirectoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
-        }
+      if (state.outputDirectoryHandle) {
         const handle = await state.outputDirectoryHandle.getFileHandle(fileName, { create: true });
         const writable = await handle.createWritable();
         await writable.write(blob);
@@ -1783,30 +2568,32 @@
       return "download";
     }
 
-    async function exportArtifacts(rawText = "", rows = []) {
-      const data = state.structuredData;
-      if (!data) return;
-      try {
-        const XLSX = await loadSheetJs();
-        const templateBytes = await loadFixedBrunswickTemplate();
-        const workbook = XLSX.read(templateBytes, { type: "array", cellStyles: true, cellFormula: true, cellDates: true });
-        const wrotePatternDesign = applyPatternDesignSheet(XLSX, workbook, data);
-        if (!wrotePatternDesign) throw new Error("Pattern Designシートへ書き込めませんでした。");
-        const base = safeFileBase(data.sourceFile);
-        const exportName = base + "_EXPORT.xlsx";
-        const logName = base + "_LOG.txt";
-        const excelArray = XLSX.write(workbook, { type: "array", bookType: "xlsx", cellStyles: true });
-        const logText = buildLogText(data, rawText, rows);
-        const mode1 = await saveFileWithPicker(exportName, new Blob([excelArray], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
-        const mode2 = await saveFileWithPicker(logName, new Blob([logText], { type: "text/plain;charset=utf-8" }));
-        log("ファイル出力: " + exportName + " / " + logName + " / " + (mode1 === "folder" && mode2 === "folder" ? "フォルダ保存" : "ダウンロード保存"));
-        setProgress(100, "出力完了: EXPORTとLOGを保存しました。");
-      } catch (error) {
-        log("Excel出力エラー: " + (error?.message || error));
-        setProgress(100, "Excel出力に失敗しました。ログを確認してください。");
-        throw error;
-      }
+async function exportArtifacts(rawText = "", rows = []) {
+  const data = state.structuredData;
+  if (!data) return;
+  const base = safeFileBase(data.sourceFile);
+  const exportName = base + "_EXPORT.xlsx";
+  const logName = base + "_LOG.txt";
+  const logText = buildLogText(data, rawText, rows);
+  try {
+    const templateBytes = await loadFixedBrunswickTemplate();
+    const excelArray = await buildPreservedBrunswickWorkbook(templateBytes, data);
+    const mode1 = await saveFileWithPicker(exportName, new Blob([excelArray], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    const mode2 = await saveFileWithPicker(logName, new Blob([logText], { type: "text/plain;charset=utf-8" }));
+    log("ファイル出力: " + exportName + " / " + logName + " / " + (mode1 === "folder" && mode2 === "folder" ? "フォルダ保存" : "ダウンロード保存"));
+    setProgress(100, "出力完了: EXPORTとLOGを保存しました。");
+  } catch (error) {
+    log("Excel出力エラー: " + (error?.message || error));
+    try {
+      await saveFileWithPicker(logName, new Blob([logText], { type: "text/plain;charset=utf-8" }));
+      log("Excel出力失敗後、ログファイルのみ保存しました: " + logName);
+    } catch (logError) {
+      log("ログ保存にも失敗: " + (logError?.message || logError));
     }
+    setProgress(100, "Excel出力に失敗しました。ログは可能な限り保存しました。");
+    throw error;
+  }
+}
 
     function formatSection(section) {
       const def = boxDefinitions[section.key];
@@ -1826,6 +2613,21 @@
         return header + "\n" + lines.join("\n") + parsed;
       }
       return header + "\n" + lines.join("\n");
+    }
+
+    function formatRowZoneContributionLines(structured) {
+      const rows = structured?.rowZoneContributions || [];
+      if (!rows.length) return [];
+      const lines = ["採用行ごとのZone寄与:"];
+      rows.forEach(row => {
+        const active = (row.activeZones || [])
+          .filter(zone => zone.oilUl > 0)
+          .map(zone => "Z" + zone.zone + " " + zone.oilUl + "uL/" + zone.overlapFt + "ft")
+          .join(", ");
+        const marker = row.oilUl > 0 && row.activeZoneCount >= 1 ? "" : " (oil 0)";
+        lines.push("  " + row.direction + " " + row.boardRange + " " + row.startFt + "-" + row.endFt + "ft " + row.oilUl + "uL" + marker + " -> " + (active || "寄与なし"));
+      });
+      return lines;
     }
 
     function formatManualOutput(cropItems, sections) {
@@ -1878,6 +2680,84 @@
       });
     }
 
+    function normalizeProfile39(values) {
+      if (!values || values.length !== 39) return null;
+      const smoothed = values.map((value, index) => {
+        const prev = index > 0 ? values[index - 1] : value;
+        const next = index < values.length - 1 ? values[index + 1] : value;
+        return value * 0.6 + prev * 0.2 + next * 0.2;
+      });
+      const max = Math.max(...smoothed);
+      if (!(max > 0)) return null;
+      return smoothed.map(value => Math.max(0, value / max * 100));
+    }
+
+    function visualBlueScore(r, g, b) {
+      const blue = Math.max(0, b - Math.max(r, g) * 0.55);
+      const cyan = Math.max(0, Math.min(g, b) - r * 1.35);
+      const saturated = Math.max(0, Math.max(b, g) - Math.min(r, g, b));
+      if (b < 70 && g < 90) return 0;
+      if (saturated < 35) return 0;
+      return Math.max(blue, cyan) + saturated * 0.35;
+    }
+
+    function extractVisualBoardProfile(canvas) {
+      if (!canvas || canvas.width < 40 || canvas.height < 40) return null;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      const image = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const columnScores = Array.from({ length: canvas.width }, () => 0);
+      const columnCounts = Array.from({ length: canvas.width }, () => 0);
+      for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+          const offset = (y * canvas.width + x) * 4;
+          const score = visualBlueScore(image[offset], image[offset + 1], image[offset + 2]);
+          if (score > 0) {
+            columnScores[x] += score;
+            columnCounts[x]++;
+          }
+        }
+      }
+      const activeColumns = columnScores.filter(value => value > 0);
+      if (activeColumns.length < Math.max(12, canvas.width * 0.08)) return null;
+      let left = columnScores.findIndex(value => value > 0);
+      let right = columnScores.length - 1 - columnScores.slice().reverse().findIndex(value => value > 0);
+      const pad = Math.max(2, Math.round((right - left + 1) * 0.015));
+      left = Math.max(0, left - pad);
+      right = Math.min(canvas.width - 1, right + pad);
+      if (right <= left) return null;
+      const bins = Array.from({ length: 39 }, () => 0);
+      for (let x = left; x <= right; x++) {
+        const bin = Math.max(0, Math.min(38, Math.floor((x - left) / (right - left + 1) * 39)));
+        bins[bin] += columnScores[x] / Math.max(1, columnCounts[x] || 1);
+      }
+      return normalizeProfile39(bins);
+    }
+
+    function combineVisualProfiles(profiles) {
+      const valid = profiles.filter(profile => profile && profile.values && profile.values.length === 39);
+      if (!valid.length) return { boardShape: [], sources: [], quality: "none" };
+      const totalWeight = valid.reduce((sum, profile) => sum + profile.weight, 0);
+      const combined = Array.from({ length: 39 }, (_, index) => valid.reduce((sum, profile) => sum + profile.values[index] * profile.weight, 0) / totalWeight);
+      return {
+        boardShape: normalizeProfile39(combined) || [],
+        sources: valid.map(profile => profile.source),
+        quality: valid.some(profile => profile.source === "graph") && valid.some(profile => profile.source === "lane") ? "strong" : "normal"
+      };
+    }
+
+    function buildVisualHints(cropItems) {
+      const profiles = [];
+      cropItems.forEach(item => {
+        if (item.key !== "graph" && item.key !== "lane") return;
+        const values = extractVisualBoardProfile(item.canvas);
+        if (!values) return;
+        profiles.push({ source: item.key, values, weight: item.key === "graph" ? 1.2 : 1 });
+      });
+      const hints = combineVisualProfiles(profiles);
+      if (hints.sources.length) log("Graph/Lane形状補助: " + hints.sources.join(", "));
+      return hints;
+    }
+
     async function runManualOcr() {
       if (!state.pageCanvas) return;
       const cropItems = buildManualCropItems();
@@ -1917,7 +2797,8 @@
         const rows = sections
           .filter(section => section.direction)
           .flatMap(section => parseRows(section.text, section.direction));
-        const structured = buildStructuredData(sections);
+        const visualHints = buildVisualHints(cropItems);
+        const structured = buildStructuredData(sections, visualHints);
         state.structuredData = structured;
         $("formattedText").value = formatManualOutput(cropItems, sections);
         $("structuredText").value = JSON.stringify(structured, null, 2);
@@ -1927,6 +2808,8 @@
         $("rowMetric").textContent = rows.length;
         log("行データ検出: " + rows.length + "行");
         log("構造化データ: Forward " + structured.totals.forwardRowCount + "行 / Reverse " + structured.totals.reverseRowCount + "行 / 合計 " + structured.totals.totalOilUl + "uL");
+        formatRowZoneContributionLines(structured).forEach(line => log(line));
+        updateQualityMetric(structured);
         setProgress(85, rows.length ? "OCR完了: " + rows.length + "行を検出しました。出力しています。" : "OCR完了: 行データは未確定です。出力しています。");
         await exportArtifacts(rawText, rows);
       } catch (error) {
@@ -1990,24 +2873,39 @@
 
     $("selectionLayer").addEventListener("pointerdown", event => {
       if (!state.pageCanvas) return;
+      event.preventDefault();
       $("selectionLayer").setPointerCapture(event.pointerId);
       const point = pointFromEvent(event);
-      state.drag = { start: point, current: point };
-      state.boxes[state.activeBox] = { x: Math.round(point.x), y: Math.round(point.y), w: 1, h: 1 };
+      const hit = hitTestSelection(point);
+      state.drag = { start: point, current: point, mode: hit.mode, handle: hit.handle || "", original: hit.box || null };
+      if (hit.mode === "create") {
+        state.boxes[state.activeBox] = { x: Math.round(point.x), y: Math.round(point.y), w: 1, h: 1 };
+      }
       renderSelectionLayer();
     });
 
     $("selectionLayer").addEventListener("pointermove", event => {
       if (!state.drag) return;
+      event.preventDefault();
       state.drag.current = pointFromEvent(event);
-      state.boxes[state.activeBox] = normalizeBox(state.drag.start, state.drag.current);
+      if (state.drag.mode === "move") {
+        state.boxes[state.activeBox] = moveBoxFromDrag(state.drag.original, state.drag.start, state.drag.current);
+      } else if (state.drag.mode === "resize") {
+        state.boxes[state.activeBox] = resizeBoxFromDrag(state.drag.original, state.drag.handle, state.drag.start, state.drag.current);
+      } else {
+        state.boxes[state.activeBox] = normalizeBox(state.drag.start, state.drag.current);
+      }
       renderSelectionLayer();
     });
 
     $("selectionLayer").addEventListener("pointerup", event => {
       if (!state.drag) return;
+      event.preventDefault();
       state.drag.current = pointFromEvent(event);
-      const box = normalizeBox(state.drag.start, state.drag.current);
+      let box = state.boxes[state.activeBox];
+      if (state.drag.mode === "move") box = moveBoxFromDrag(state.drag.original, state.drag.start, state.drag.current);
+      else if (state.drag.mode === "resize") box = resizeBoxFromDrag(state.drag.original, state.drag.handle, state.drag.start, state.drag.current);
+      else box = normalizeBox(state.drag.start, state.drag.current);
       state.drag = null;
       if (box.w < 8 || box.h < 8) {
         delete state.boxes[state.activeBox];
@@ -2041,10 +2939,12 @@
     $("zoomRange").addEventListener("input", event => setZoom(Number(event.target.value) / 100));
     $("fitWidthBtn").addEventListener("click", fitPageWidth);
     $("actualSizeBtn").addEventListener("click", () => setZoom(1));
+    $("canvasWrap").addEventListener("dblclick", fitPageWidth);
     window.addEventListener("resize", () => {
-      if (state.pageCanvas) applyZoom();
+      if (state.pageCanvas) fitPageWidth();
     });
     resetView();
   </script>
 </body>
 </html>
+
